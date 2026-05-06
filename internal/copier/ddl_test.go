@@ -274,6 +274,26 @@ FROM [dbo].[t1]`,
 	}
 }
 
+func TestCreateViewSQLStripsLeadingCommentaryBeforeHeader(t *testing.T) {
+	view := viewMeta{
+		Schema: "dbo",
+		Name:   "v1",
+		Definition: `-- scripted from source database
+/* keep this comment out of the executable header */
+CREATE VIEW [dbo].[v1] AS
+SELECT [id]
+FROM [dbo].[t1]`,
+	}
+
+	got := view.CreateViewSQL()
+	if !strings.HasPrefix(got, "CREATE OR ALTER VIEW [dbo].[v1] AS\n") {
+		t.Fatalf("unexpected CREATE VIEW prefix:\n%s", got)
+	}
+	if strings.Count(strings.ToUpper(got), "CREATE VIEW") != 0 {
+		t.Fatalf("expected rewritten definition without nested CREATE VIEW, got:\n%s", got)
+	}
+}
+
 func TestCreateSequenceSQL(t *testing.T) {
 	sequence := sequenceMeta{
 		Schema:      "seq",
