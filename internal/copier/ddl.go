@@ -10,6 +10,7 @@ var viewHeaderPattern = regexp.MustCompile(`(?is)^\s*(?:create|alter)\s+view\s+(
 var functionHeaderPattern = regexp.MustCompile(`(?is)^\s*(?:create|alter)\s+function\s+(?:\[[^\]]+\]|[^\s.]+)\s*\.\s*(?:\[[^\]]+\]|[^\s(]+)\s*`)
 var procedureHeaderPattern = regexp.MustCompile(`(?is)^\s*(?:create|alter)\s+(?:proc|procedure)\s+(?:\[[^\]]+\]|[^\s.]+)\s*\.\s*(?:\[[^\]]+\]|[^\s(]+)\s*`)
 var triggerHeaderPattern = regexp.MustCompile(`(?is)^\s*(?:create|alter)\s+trigger\s+(?:\[[^\]]+\]|[^\s.]+)\s*\.\s*(?:\[[^\]]+\]|[^\s]+)\s*`)
+var moduleBatchPreamblePattern = regexp.MustCompile(`(?im)^\s*(?:set\s+(?:ansi_nulls|quoted_identifier)\s+(?:on|off)\s*;?|go\s*;?)\s*$`)
 
 func (t tableMeta) FQTN() string {
 	return quoteIdent(t.Schema) + "." + quoteIdent(t.Name)
@@ -230,9 +231,16 @@ func (t tableTypeMeta) checkConstraintSQL(check checkConstraint) string {
 	return fmt.Sprintf("CHECK %s", check.Definition)
 }
 
+func normalizeProgrammableDefinition(definition string, headerPattern *regexp.Regexp) string {
+	definition = strings.TrimSpace(definition)
+	definition = moduleBatchPreamblePattern.ReplaceAllString(definition, "")
+	definition = strings.TrimSpace(definition)
+	definition = headerPattern.ReplaceAllString(definition, "")
+	return strings.TrimSpace(definition)
+}
+
 func (v viewMeta) CreateViewSQL() string {
-	definition := strings.TrimSpace(v.Definition)
-	definition = viewHeaderPattern.ReplaceAllString(definition, "")
+	definition := normalizeProgrammableDefinition(v.Definition, viewHeaderPattern)
 	return fmt.Sprintf("CREATE OR ALTER VIEW %s %s", v.FQTN(), definition)
 }
 
@@ -277,20 +285,17 @@ func (s sequenceMeta) CreateSequenceSQL() (string, error) {
 }
 
 func (p procedureMeta) CreateProcedureSQL() string {
-	definition := strings.TrimSpace(p.Definition)
-	definition = procedureHeaderPattern.ReplaceAllString(definition, "")
+	definition := normalizeProgrammableDefinition(p.Definition, procedureHeaderPattern)
 	return fmt.Sprintf("CREATE OR ALTER PROCEDURE %s %s", p.FQTN(), definition)
 }
 
 func (f functionMeta) CreateFunctionSQL() string {
-	definition := strings.TrimSpace(f.Definition)
-	definition = functionHeaderPattern.ReplaceAllString(definition, "")
+	definition := normalizeProgrammableDefinition(f.Definition, functionHeaderPattern)
 	return fmt.Sprintf("CREATE OR ALTER FUNCTION %s %s", f.FQTN(), definition)
 }
 
 func (t triggerMeta) CreateTriggerSQL() string {
-	definition := strings.TrimSpace(t.Definition)
-	definition = triggerHeaderPattern.ReplaceAllString(definition, "")
+	definition := normalizeProgrammableDefinition(t.Definition, triggerHeaderPattern)
 	return fmt.Sprintf("CREATE OR ALTER TRIGGER %s %s", t.FQTN(), definition)
 }
 

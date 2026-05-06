@@ -249,6 +249,31 @@ FROM dbo.t1`,
 	}
 }
 
+func TestCreateViewSQLStripsBatchPreamble(t *testing.T) {
+	view := viewMeta{
+		Schema: "dbo",
+		Name:   "v1",
+		Definition: `SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE VIEW [dbo].[v1] AS
+SELECT [id]
+FROM [dbo].[t1]`,
+	}
+
+	got := view.CreateViewSQL()
+	if !strings.HasPrefix(got, "CREATE OR ALTER VIEW [dbo].[v1] AS\n") {
+		t.Fatalf("unexpected CREATE VIEW prefix:\n%s", got)
+	}
+	if strings.Contains(strings.ToUpper(got), "SET ANSI_NULLS") || strings.Contains(strings.ToUpper(got), "SET QUOTED_IDENTIFIER") {
+		t.Fatalf("expected batch preamble to be removed, got:\n%s", got)
+	}
+	if strings.Contains(strings.ToUpper(got), "\nGO\n") {
+		t.Fatalf("expected GO batch separators to be removed, got:\n%s", got)
+	}
+}
+
 func TestCreateSequenceSQL(t *testing.T) {
 	sequence := sequenceMeta{
 		Schema:      "seq",
