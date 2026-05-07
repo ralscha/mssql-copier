@@ -118,10 +118,50 @@ mssql-copier \
   --batch-size 10000
 ```
 
+### YAML configuration
+
+You can keep most parameters in a YAML file. By default, the copier looks for `mssql-copier.yml` in the current working directory.
+
+A starter template is checked in at `mssql-copier.example.yml`.
+
+```sh
+# Uses ./mssql-copier.yml when present
+mssql-copier
+
+# Use a custom config file path
+mssql-copier --config ./config/prod.yml
+```
+
+CLI flags override values from YAML when both are provided.
+
+`--export-ddl` and `--export-data` must be passed as CLI flags. This lets export modes still reuse YAML values such as `source`, `workers`, and include/exclude filters.
+
+Example `mssql-copier.yml`:
+
+```yaml
+source: sqlserver://user:pass@source-host:1433?database=SourceDB
+target: sqlserver://user:pass@target-host:1433?database=TargetDB
+workers: 8
+batch-size: 10000
+verbose: true
+drop-existing: false
+include-schemas:
+  - sales
+  - reporting
+exclude-schemas:
+  - audit
+include-tables:
+  - sales.orders
+  - sales.customers
+exclude-tables:
+  - "*.audit_%"
+```
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--config` | `mssql-copier.yml` | Path to YAML config file; optional when using the default path |
 | `--source` | *(required)* | Source SQL Server DSN |
 | `--target` | *(required unless `--plan`)* | Target SQL Server DSN |
 | `--plan` | `false` | Print execution plan without modifying target |
@@ -131,10 +171,10 @@ mssql-copier \
 | `--batch-size` | `5000` | Rows per bulk batch hint |
 | `--drop-existing` | `false` | Drop matching target tables before recreating |
 | `--verbose` | `true` | Log per-table activity |
-| `--include-schemas` | | Comma-separated schema names or wildcard patterns |
-| `--exclude-schemas` | | Comma-separated schema names or wildcard patterns |
-| `--include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns |
-| `--exclude-tables` | | Comma-separated table names or wildcard patterns |
+| `--include-schemas` | | Comma-separated schema names or wildcard patterns (YAML: list) |
+| `--exclude-schemas` | | Comma-separated schema names or wildcard patterns (YAML: list) |
+| `--include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns (YAML: list) |
+| `--exclude-tables` | | Comma-separated table names or wildcard patterns (YAML: list) |
 
 ### DSN format
 

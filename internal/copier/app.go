@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"flag"
@@ -8,10 +9,14 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
+	"gopkg.in/yaml.v3"
 )
+
+const defaultConfigPath = "mssql-copier.yml"
 
 type config struct {
 	SourceDSN      string
@@ -42,6 +47,22 @@ type copier struct {
 	procedures []procedureMeta
 	triggers   []triggerMeta
 	synonyms   []synonymMeta
+}
+
+type yamlConfig struct {
+	SourceDSN      string   `yaml:"source"`
+	TargetDSN      string   `yaml:"target"`
+	Workers        *int     `yaml:"workers"`
+	BatchSize      *int     `yaml:"batch-size"`
+	Verbose        *bool    `yaml:"verbose"`
+	Plan           *bool    `yaml:"plan"`
+	DropExisting   *bool    `yaml:"drop-existing"`
+	IncludeSchemas []string `yaml:"include-schemas"`
+	ExcludeSchemas []string `yaml:"exclude-schemas"`
+	IncludeTables  []string `yaml:"include-tables"`
+	ExcludeTables  []string `yaml:"exclude-tables"`
+	ExportDDLFile  *string  `yaml:"export-ddl"`
+	ExportDataFile *string  `yaml:"export-data"`
 }
 
 func Main() {
@@ -88,16 +109,30 @@ func runMain() error {
 }
 
 func parseFlags() config {
-	var cfg config
-	flag.StringVar(&cfg.SourceDSN, "source", "", "source SQL Server DSN")
-	flag.StringVar(&cfg.TargetDSN, "target", "", "target SQL Server DSN")
-	flag.StringVar(&cfg.ExportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
-	flag.StringVar(&cfg.ExportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
-	flag.IntVar(&cfg.Workers, "workers", max(2, runtime.NumCPU()), "number of concurrent table copy workers")
-	flag.IntVar(&cfg.BatchSize, "batch-size", 5000, "rows per bulk batch hint")
-	flag.BoolVar(&cfg.Verbose, "verbose", true, "log per-table activity")
-	flag.BoolVar(&cfg.Plan, "plan", false, "print the filtered execution plan without modifying the target")
-	flag.BoolVar(&cfg.DropExisting, "drop-existing", false, "drop matching target tables before recreating them")
+	defaultWorkers := max(2, runtime.NumCPU())
+	defaultBatchSize := 5000
+
+	var sourceDSN string
+	var targetDSN string
+	var exportDDLFile string
+	var exportDataFile string
+	workers := defaultWorkers
+	batchSize := defaultBatchSize
+	verbose := true
+	var plan bool
+	var dropExisting bool
+	configPath := defaultConfigPath
+
+	flag.StringVar(&configPath, "config", defaultConfigPath, "path to YAML config file")
+	flag.StringVar(&sourceDSN, "source", "", "source SQL Server DSN")
+	flag.StringVar(&targetDSN, "target", "", "target SQL Server DSN")
+	flag.StringVar(&exportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
+	flag.StringVar(&exportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
+	flag.IntVar(&workers, "workers", defaultWorkers, "number of concurrent table copy workers")
+	flag.IntVar(&batchSize, "batch-size", defaultBatchSize, "rows per bulk batch hint")
+	flag.BoolVar(&verbose, "verbose", true, "log per-table activity")
+	flag.BoolVar(&plan, "plan", false, "print the filtered execution plan without modifying the target")
+	flag.BoolVar(&dropExisting, "drop-existing", false, "drop matching target tables before recreating them")
 	var includeSchemas string
 	var excludeSchemas string
 	var includeTables string
@@ -107,6 +142,64 @@ func parseFlags() config {
 	flag.StringVar(&includeTables, "include-tables", "", "comma-separated table names, schema.table names, or wildcard patterns to copy")
 	flag.StringVar(&excludeTables, "exclude-tables", "", "comma-separated table names, schema.table names, or wildcard patterns to skip")
 	flag.Parse()
+
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) {
+		explicit[f.Name] = true
+	})
+
+	cfg := config{
+		Workers:   defaultWorkers,
+		BatchSize: defaultBatchSize,
+		Verbose:   true,
+	}
+
+	yamlCfg, loaded, err := loadYAMLConfig(configPath, explicit["config"])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		flag.Usage()
+		os.Exit(2)
+	}
+	if loaded {
+		yamlCfg.applyTo(&cfg)
+	}
+
+	if explicit["source"] {
+		cfg.SourceDSN = strings.TrimSpace(sourceDSN)
+	}
+	if explicit["target"] {
+		cfg.TargetDSN = strings.TrimSpace(targetDSN)
+	}
+	if explicit["workers"] {
+		cfg.Workers = workers
+	}
+	if explicit["batch-size"] {
+		cfg.BatchSize = batchSize
+	}
+	if explicit["verbose"] {
+		cfg.Verbose = verbose
+	}
+	if explicit["plan"] {
+		cfg.Plan = plan
+	}
+	if explicit["drop-existing"] {
+		cfg.DropExisting = dropExisting
+	}
+	if explicit["include-schemas"] {
+		cfg.IncludeSchemas = parseList(includeSchemas)
+	}
+	if explicit["exclude-schemas"] {
+		cfg.ExcludeSchemas = parseList(excludeSchemas)
+	}
+	if explicit["include-tables"] {
+		cfg.IncludeTables = parseList(includeTables)
+	}
+	if explicit["exclude-tables"] {
+		cfg.ExcludeTables = parseList(excludeTables)
+	}
+
+	cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
+	cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
 
 	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
 		if cfg.Plan || cfg.ExportDDLFile != "" || cfg.ExportDataFile != "" {
@@ -123,11 +216,80 @@ func parseFlags() config {
 	if cfg.BatchSize < 1 {
 		cfg.BatchSize = 5000
 	}
-	cfg.IncludeSchemas = parseList(includeSchemas)
-	cfg.ExcludeSchemas = parseList(excludeSchemas)
-	cfg.IncludeTables = parseList(includeTables)
-	cfg.ExcludeTables = parseList(excludeTables)
 	return cfg
+}
+
+func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		if required {
+			return yamlConfig{}, false, fmt.Errorf("-config cannot be empty")
+		}
+		return yamlConfig{}, false, nil
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) && !required && path == defaultConfigPath {
+			return yamlConfig{}, false, nil
+		}
+		return yamlConfig{}, false, fmt.Errorf("read config file %q: %w", path, err)
+	}
+
+	var cfg yamlConfig
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return yamlConfig{}, false, fmt.Errorf("parse config file %q: %w", path, err)
+	}
+	if cfg.ExportDDLFile != nil {
+		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-ddl; use the -export-ddl flag", path)
+	}
+	if cfg.ExportDataFile != nil {
+		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-data; use the -export-data flag", path)
+	}
+
+	return cfg, true, nil
+}
+
+func (yamlCfg yamlConfig) applyTo(cfg *config) {
+	cfg.SourceDSN = strings.TrimSpace(yamlCfg.SourceDSN)
+	cfg.TargetDSN = strings.TrimSpace(yamlCfg.TargetDSN)
+	if yamlCfg.Workers != nil {
+		cfg.Workers = *yamlCfg.Workers
+	}
+	if yamlCfg.BatchSize != nil {
+		cfg.BatchSize = *yamlCfg.BatchSize
+	}
+	if yamlCfg.Verbose != nil {
+		cfg.Verbose = *yamlCfg.Verbose
+	}
+	if yamlCfg.Plan != nil {
+		cfg.Plan = *yamlCfg.Plan
+	}
+	if yamlCfg.DropExisting != nil {
+		cfg.DropExisting = *yamlCfg.DropExisting
+	}
+	cfg.IncludeSchemas = normalizeList(yamlCfg.IncludeSchemas)
+	cfg.ExcludeSchemas = normalizeList(yamlCfg.ExcludeSchemas)
+	cfg.IncludeTables = normalizeList(yamlCfg.IncludeTables)
+	cfg.ExcludeTables = normalizeList(yamlCfg.ExcludeTables)
+}
+
+func normalizeList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		if v := normalizeFilterName(value); v != "" {
+			normalized = append(normalized, v)
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func (cfg config) requiresTarget() bool {

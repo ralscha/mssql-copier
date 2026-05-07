@@ -1,0 +1,23 @@
+# Sample configuration for mssql-copier.
+# Copy this file to mssql-copier.yml and adjust values for your environment.
+
+source: sqlserver://user:pass@source-host:1433?database=SourceDB
+target: sqlserver://user:pass@target-host:1433?database=TargetDB
+
+workers: 8
+batch-size: 10000
+verbose: true
+plan: false
+drop-existing: false
+
+include-schemas:
+  - sales
+  - reporting
+exclude-schemas:
+  - audit
+
+include-tables:
+  - sales.orders
+  - sales.customers
+exclude-tables:
+  - "*.audit_%"
