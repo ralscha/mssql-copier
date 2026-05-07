@@ -1,12 +1,16 @@
 package copier
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -18,6 +22,11 @@ import (
 )
 
 const defaultConfigPath = "mssql-copier.yml"
+
+var (
+	confirmationInput  io.Reader = os.Stdin
+	confirmationOutput io.Writer = os.Stderr
+)
 
 type config struct {
 	SourceDSN      string
@@ -82,6 +91,9 @@ func runMain() error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
+	if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
+		return err
+	}
 	dataFaker, err := newDataFaker(cfg.FakeData)
 	if err != nil {
 		return err
@@ -122,6 +134,7 @@ func runMain() error {
 func parseFlags() config {
 	defaultWorkers := max(2, runtime.NumCPU())
 	defaultBatchSize := 5000
+	configureUsage(flag.CommandLine, os.Args[0])
 
 	var sourceDSN string
 	var targetDSN string
@@ -234,7 +247,7 @@ func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		if required {
-			return yamlConfig{}, false, fmt.Errorf("-config cannot be empty")
+			return yamlConfig{}, false, fmt.Errorf("--config cannot be empty")
 		}
 		return yamlConfig{}, false, nil
 	}
@@ -255,13 +268,110 @@ func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
 		return yamlConfig{}, false, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 	if cfg.ExportDDLFile != nil {
-		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-ddl; use the -export-ddl flag", path)
+		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-ddl; use the --export-ddl flag", path)
 	}
 	if cfg.ExportDataFile != nil {
-		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-data; use the -export-data flag", path)
+		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-data; use the --export-data flag", path)
 	}
 
 	return cfg, true, nil
+}
+
+func configureUsage(fs *flag.FlagSet, programName string) {
+	fs.Usage = func() {
+		out := fs.Output()
+		if _, err := fmt.Fprintf(out, "Usage of %s:\n", programName); err != nil {
+			return
+		}
+		fs.VisitAll(func(f *flag.Flag) {
+			if out == nil {
+				return
+			}
+			name, usage := flag.UnquoteUsage(f)
+			if name == "" {
+				name = flagTypeName(f)
+			}
+
+			if name == "bool" {
+				if _, err := fmt.Fprintf(out, "  --%s\n", f.Name); err != nil {
+					out = nil
+					return
+				}
+			} else {
+				if _, err := fmt.Fprintf(out, "  --%s %s\n", f.Name, name); err != nil {
+					out = nil
+					return
+				}
+			}
+			if _, err := fmt.Fprintf(out, "      %s", usage); err != nil {
+				out = nil
+				return
+			}
+			if def := defaultValueString(f); def != "" {
+				if _, err := fmt.Fprintf(out, " (default %s)", def); err != nil {
+					out = nil
+					return
+				}
+			}
+			if _, err := fmt.Fprintln(out); err != nil {
+				out = nil
+			}
+		})
+	}
+}
+
+func flagTypeName(f *flag.Flag) string {
+	if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+		return "bool"
+	}
+	getter, ok := f.Value.(flag.Getter)
+	if !ok {
+		return flagTypeNameFromString(f.DefValue)
+	}
+	switch getter.Get().(type) {
+	case string:
+		return "string"
+	case int, int8, int16, int32, int64:
+		return "int"
+	case bool:
+		return "bool"
+	default:
+		return flagTypeNameFromString(f.DefValue)
+	}
+}
+
+func flagTypeNameFromString(value string) string {
+	switch {
+	case value == "":
+		return "string"
+	case strings.EqualFold(value, "true") || strings.EqualFold(value, "false"):
+		return "bool"
+	default:
+		if _, err := fmt.Sscanf(value, "%d", new(int)); err == nil {
+			return "int"
+		}
+		return "value"
+	}
+}
+
+func defaultValueString(f *flag.Flag) string {
+	if isZeroValue(f, f.DefValue) {
+		return ""
+	}
+	if flagTypeName(f) == "string" {
+		return fmt.Sprintf("%q", f.DefValue)
+	}
+	return f.DefValue
+}
+
+func isZeroValue(f *flag.Flag, value string) bool {
+	if value == "" {
+		return true
+	}
+	if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+		return value == "false"
+	}
+	return false
 }
 
 func (yamlCfg yamlConfig) applyTo(cfg *config) {
@@ -339,6 +449,99 @@ func (cfg config) validate() error {
 		return fmt.Errorf("-drop-existing cannot be combined with -export-data")
 	}
 	return nil
+}
+
+func confirmTargetPermission(targetDSN string, requiresTarget bool) error {
+	if !requiresTarget {
+		return nil
+	}
+	if isLocalTargetDSN(targetDSN) {
+		return nil
+	}
+
+	host := targetHostLabel(targetDSN)
+	if _, err := fmt.Fprintf(confirmationOutput, "Target host %q is not local. Type 'yes' to continue: ", host); err != nil {
+		return fmt.Errorf("prompt for target confirmation: %w", err)
+	}
+
+	response, err := bufio.NewReader(confirmationInput).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("read target confirmation: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(response), "yes") {
+		return nil
+	}
+	return fmt.Errorf("aborted before connecting to non-local target %q", host)
+}
+
+func isLocalTargetDSN(targetDSN string) bool {
+	host := parseTargetHost(targetDSN)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func targetHostLabel(targetDSN string) string {
+	host := parseTargetHost(targetDSN)
+	if host == "" {
+		return "unknown"
+	}
+	return host
+}
+
+func parseTargetHost(targetDSN string) string {
+	targetDSN = strings.TrimSpace(targetDSN)
+	if targetDSN == "" {
+		return ""
+	}
+	if u, err := url.Parse(targetDSN); err == nil && u.Host != "" {
+		return strings.TrimSpace(u.Hostname())
+	}
+
+	for _, part := range strings.FieldsFunc(targetDSN, func(r rune) bool {
+		return r == ';' || r == '\n' || r == '\r'
+	}) {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		if normalizedKey != "server" && normalizedKey != "data source" && normalizedKey != "addr" && normalizedKey != "address" && normalizedKey != "network address" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.TrimPrefix(value, "tcp:")
+		value = strings.TrimPrefix(value, "np:")
+		value = strings.TrimPrefix(value, "lpc:")
+		if value == "" {
+			return ""
+		}
+		if strings.HasPrefix(value, "[") {
+			if host, _, err := net.SplitHostPort(value); err == nil {
+				return strings.TrimSpace(strings.Trim(host, "[]"))
+			}
+			return strings.TrimSpace(strings.Trim(value, "[]"))
+		}
+		if host, _, err := net.SplitHostPort(value); err == nil {
+			return strings.TrimSpace(host)
+		}
+		if idx := strings.LastIndex(value, ","); idx >= 0 {
+			if _, err := fmt.Sscanf(strings.TrimSpace(value[idx+1:]), "%d", new(int)); err == nil {
+				value = value[:idx]
+			}
+		}
+		if idx := strings.IndexAny(value, "\\/"); idx >= 0 {
+			value = value[:idx]
+		}
+		return strings.TrimSpace(value)
+	}
+
+	return ""
 }
 
 func openDB(dsn string, maxConns int) (*sql.DB, error) {

@@ -53,6 +53,8 @@ mssql-copier \
   --target "sqlserver://user:pass@target-host:1433?database=TargetDB"
 ```
 
+When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the CLI asks for an explicit `yes` before it opens the target connection.
+
 ### Plan mode (dry run)
 
 Preview which objects would be copied without touching the target. In plan mode, only `--source` is required; `--target` is optional and is shown in the output only when provided:
@@ -181,7 +183,7 @@ fake-data:
 |------|---------|-------------|
 | `--config` | `mssql-copier.yml` | Path to YAML config file; optional when using the default path |
 | `--source` | *(required)* | Source SQL Server DSN |
-| `--target` | *(required unless `--plan`)* | Target SQL Server DSN |
+| `--target` | *(required unless `--plan`)* | Target SQL Server DSN; non-local targets require an interactive `yes` confirmation |
 | `--plan` | `false` | Print execution plan without modifying target |
 | `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
 | `--export-data` | | Write plain SQL data inserts to a file; `--target` is not required |

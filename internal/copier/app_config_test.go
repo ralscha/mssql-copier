@@ -1,6 +1,9 @@
 package copier
 
 import (
+	"bytes"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,8 +42,42 @@ func TestLoadYAMLConfigRejectsExportFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when export-ddl is configured in YAML")
 	}
-	if !strings.Contains(err.Error(), "cannot set export-ddl") {
+	if !strings.Contains(err.Error(), "cannot set export-ddl") || !strings.Contains(err.Error(), "--export-ddl") {
 		t.Fatalf("expected export-ddl validation error, got %v", err)
+	}
+}
+
+func TestConfigureUsageUsesDoubleDashFlags(t *testing.T) {
+	fs := flag.NewFlagSet("mssql-copier", flag.ContinueOnError)
+	buf := &bytes.Buffer{}
+	fs.SetOutput(buf)
+
+	var configPath string
+	var workers int
+	var verbose bool
+	fs.StringVar(&configPath, "config", defaultConfigPath, "path to YAML config file")
+	fs.IntVar(&workers, "workers", 4, "number of concurrent table copy workers")
+	fs.BoolVar(&verbose, "verbose", true, "log per-table activity")
+
+	configureUsage(fs, "mssql-copier")
+	fs.Usage()
+
+	output := buf.String()
+	for _, want := range []string{
+		"Usage of mssql-copier:",
+		"  --config string",
+		"  --workers int",
+		"  --verbose",
+		"(default \"mssql-copier.yml\")",
+		"(default 4)",
+		"(default true)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("usage output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "\n  -config") || strings.Contains(output, "\n  -workers") || strings.Contains(output, "\n  -verbose") {
+		t.Fatalf("usage output should not contain single-dash flags:\n%s", output)
 	}
 }
 
@@ -100,4 +137,91 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 	if len(cfg.FakeData) != 2 || cfg.FakeData["users.name"] != "Person.Name" || cfg.FakeData["customer_ssn"] != "ssn" {
 		t.Fatalf("fake-data = %#v, want normalized fake-data map", cfg.FakeData)
 	}
+}
+
+func TestIsLocalTargetDSN(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+		want bool
+	}{
+		{name: "localhost url", dsn: "sqlserver://user:pass@localhost:1433?database=db", want: true},
+		{name: "ipv4 loopback url", dsn: "sqlserver://user:pass@127.0.0.1:1433?database=db", want: true},
+		{name: "ipv6 loopback url", dsn: "sqlserver://user:pass@[::1]:1433?database=db", want: true},
+		{name: "server equals localhost", dsn: "server=localhost;database=db", want: true},
+		{name: "server equals ipv4 loopback", dsn: "server=127.0.0.1,1433;database=db", want: true},
+		{name: "server equals ipv6 loopback", dsn: "server=[::1]:1433;database=db", want: true},
+		{name: "remote url", dsn: "sqlserver://user:pass@db.example.com:1433?database=db", want: false},
+		{name: "remote server", dsn: "server=tcp:db.example.com,1433;database=db", want: false},
+		{name: "empty", dsn: "", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLocalTargetDSN(tc.dsn); got != tc.want {
+				t.Fatalf("isLocalTargetDSN(%q) = %v, want %v", tc.dsn, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfirmTargetPermission(t *testing.T) {
+	oldInput := confirmationInput
+	oldOutput := confirmationOutput
+	t.Cleanup(func() {
+		confirmationInput = oldInput
+		confirmationOutput = oldOutput
+	})
+
+	t.Run("skips prompt for local target", func(t *testing.T) {
+		confirmationInput = strings.NewReader("")
+		output := &bytes.Buffer{}
+		confirmationOutput = output
+
+		if err := confirmTargetPermission("sqlserver://user:pass@localhost:1433?database=db", true); err != nil {
+			t.Fatalf("confirmTargetPermission returned error for local target: %v", err)
+		}
+		if output.Len() != 0 {
+			t.Fatalf("expected no prompt for local target, got %q", output.String())
+		}
+	})
+
+	t.Run("accepts explicit yes for remote target", func(t *testing.T) {
+		confirmationInput = strings.NewReader("yes\n")
+		output := &bytes.Buffer{}
+		confirmationOutput = output
+
+		if err := confirmTargetPermission("sqlserver://user:pass@db.example.com:1433?database=db", true); err != nil {
+			t.Fatalf("confirmTargetPermission returned error: %v", err)
+		}
+		if !strings.Contains(output.String(), `Target host "db.example.com" is not local`) {
+			t.Fatalf("expected prompt to mention remote host, got %q", output.String())
+		}
+	})
+
+	t.Run("rejects non-yes for remote target", func(t *testing.T) {
+		confirmationInput = strings.NewReader("no\n")
+		confirmationOutput = io.Discard
+
+		err := confirmTargetPermission("sqlserver://user:pass@db.example.com:1433?database=db", true)
+		if err == nil {
+			t.Fatal("expected error when remote target confirmation is denied")
+		}
+		if !strings.Contains(err.Error(), "aborted before connecting to non-local target") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("skips prompt when target is not required", func(t *testing.T) {
+		confirmationInput = strings.NewReader("")
+		output := &bytes.Buffer{}
+		confirmationOutput = output
+
+		if err := confirmTargetPermission("sqlserver://user:pass@db.example.com:1433?database=db", false); err != nil {
+			t.Fatalf("confirmTargetPermission returned error when target is optional: %v", err)
+		}
+		if output.Len() != 0 {
+			t.Fatalf("expected no prompt when target is optional, got %q", output.String())
+		}
+	})
 }
