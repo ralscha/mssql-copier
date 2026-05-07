@@ -18,6 +18,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Stored procedure copy** — copies stored procedures with rerun-safe `CREATE OR ALTER PROCEDURE`
 - **Synonym copy** — copies synonyms with rerun-safe drop-and-create behavior
 - **Plan mode** — preview the execution plan without modifying the target
+- **Liquibase export mode** — writes an initial Liquibase formatted SQL file for the discovered schema objects
 - **Drop-existing mode** — optionally drop matching target tables before recreating them
 - **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
 - **Integration tested** — includes testcontainers-based integration tests
@@ -47,17 +48,29 @@ internal/copier/    copier engine, SQL metadata logic, and tests
 
 ```sh
 mssql-copier \
-  -source "sqlserver://user:pass@source-host:1433?database=SourceDB" \
-  -target "sqlserver://user:pass@target-host:1433?database=TargetDB"
+  --source "sqlserver://user:pass@source-host:1433?database=SourceDB" \
+  --target "sqlserver://user:pass@target-host:1433?database=TargetDB"
 ```
 
 ### Plan mode (dry run)
 
-Preview which objects would be copied without touching the target. In plan mode, only `-source` is required; `-target` is optional and is shown in the output only when provided:
+Preview which objects would be copied without touching the target. In plan mode, only `--source` is required; `--target` is optional and is shown in the output only when provided:
 
 ```sh
-mssql-copier -plan -source "sqlserver://..."
+mssql-copier --plan --source "sqlserver://..."
 ```
+
+### DDL export
+
+Write a source-only DDL baseline file for the selected schema objects. The generated file is Liquibase-formatted SQL, so it can be used directly as a Liquibase changelog. This mode exports DDL only; it does not export table data.
+
+```sh
+mssql-copier \
+  --source "sqlserver://..." \
+  --export-ddl ./liquibase/initial.sql
+```
+
+The generated file contains ordered Liquibase changesets for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `--drop-existing` is not supported with this mode.
 
 ### Filtering objects
 
@@ -67,47 +80,48 @@ When a filtered copy excludes a referenced parent table and that table is not al
 
 ```sh
 # Copy only tables in the "sales" schema
-mssql-copier -source "..." -target "..." -include-schemas "sales"
+mssql-copier --source "..." --target "..." --include-schemas "sales"
 
 # Exclude audit tables
-mssql-copier -source "..." -target "..." -exclude-tables "*.audit_%"
+mssql-copier --source "..." --target "..." --exclude-tables "*.audit_%"
 
 # Copy only specific tables (schema-qualified)
-mssql-copier -source "..." -target "..." -include-tables "dbo.orders,sales.customers"
+mssql-copier --source "..." --target "..." --include-tables "dbo.orders,sales.customers"
 ```
 
 ### Drop and recreate
 
 ```sh
-mssql-copier -source "..." -target "..." -drop-existing
+mssql-copier --source "..." --target "..." --drop-existing
 ```
 
-Alias user-defined types and user-defined table types are created before tables and procedures so recreated table definitions can keep alias types and TVP-based procedures can compile on the target. Sequences are created before tables so defaults like `NEXT VALUE FOR ...` work during table creation. Views are created after tables and indexes. Functions are created after views in dependency order. Synonyms are then recreated so late-bound references are available to programmable objects. Stored procedures are created after tables, views, functions, table types, and synonyms, with explicit dependency ordering across copied procedures. Table-scoped DML triggers are created after tables, procedures, and synonyms so they bind to recreated target tables without firing during the initial data copy and can reference copied synonyms. Existing target sequences, views, functions, procedures, triggers, and synonyms are refreshed on reruns. Alias types are recreated on rerun only when `-drop-existing` is set. Table types are created only when missing.
+Alias user-defined types and user-defined table types are created before tables and procedures so recreated table definitions can keep alias types and TVP-based procedures can compile on the target. Sequences are created before tables so defaults like `NEXT VALUE FOR ...` work during table creation. Views are created after tables and indexes. Functions are created after views in dependency order. Synonyms are then recreated so late-bound references are available to programmable objects. Stored procedures are created after tables, views, functions, table types, and synonyms, with explicit dependency ordering across copied procedures. Table-scoped DML triggers are created after tables, procedures, and synonyms so they bind to recreated target tables without firing during the initial data copy and can reference copied synonyms. Existing target sequences, views, functions, procedures, triggers, and synonyms are refreshed on reruns. Alias types are recreated on rerun only when `--drop-existing` is set. Table types are created only when missing.
 
 ### Tuning
 
 ```sh
 mssql-copier \
-  -source "..." -target "..." \
-  -workers 8 \
-  -batch-size 10000
+  --source "..." --target "..." \
+  --workers 8 \
+  --batch-size 10000
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-source` | *(required)* | Source SQL Server DSN |
-| `-target` | *(required unless `-plan`)* | Target SQL Server DSN |
-| `-plan` | `false` | Print execution plan without modifying target |
-| `-workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
-| `-batch-size` | `5000` | Rows per bulk batch hint |
-| `-drop-existing` | `false` | Drop matching target tables before recreating |
-| `-verbose` | `true` | Log per-table activity |
-| `-include-schemas` | | Comma-separated schema names or wildcard patterns |
-| `-exclude-schemas` | | Comma-separated schema names or wildcard patterns |
-| `-include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns |
-| `-exclude-tables` | | Comma-separated table names or wildcard patterns |
+| `--source` | *(required)* | Source SQL Server DSN |
+| `--target` | *(required unless `--plan`)* | Target SQL Server DSN |
+| `--plan` | `false` | Print execution plan without modifying target |
+| `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
+| `--workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
+| `--batch-size` | `5000` | Rows per bulk batch hint |
+| `--drop-existing` | `false` | Drop matching target tables before recreating |
+| `--verbose` | `true` | Log per-table activity |
+| `--include-schemas` | | Comma-separated schema names or wildcard patterns |
+| `--exclude-schemas` | | Comma-separated schema names or wildcard patterns |
+| `--include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns |
+| `--exclude-tables` | | Comma-separated table names or wildcard patterns |
 
 ### DSN format
 
@@ -167,7 +181,7 @@ Sequences are copied automatically with table copy. Their definitions are create
 
 ### Alias User-Defined Types
 
-Alias user-defined types are copied automatically with table copy. For alias types based on built-in SQL Server scalar types, the copier preserves the alias type in recreated table column definitions. Existing target alias types are recreated automatically only when `-drop-existing` is set.
+Alias user-defined types are copied automatically with table copy. For alias types based on built-in SQL Server scalar types, the copier preserves the alias type in recreated table column definitions. Existing target alias types are recreated automatically only when `--drop-existing` is set.
 
 ### User-Defined Table Types
 

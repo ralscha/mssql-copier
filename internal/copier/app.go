@@ -16,6 +16,7 @@ import (
 type config struct {
 	SourceDSN      string
 	TargetDSN      string
+	ExportDDLFile  string
 	Workers        int
 	BatchSize      int
 	Verbose        bool
@@ -51,6 +52,9 @@ func Main() {
 
 func runMain() error {
 	cfg := parseFlags()
+	if cfg.DropExisting && cfg.ExportDDLFile != "" {
+		return fmt.Errorf("-drop-existing cannot be combined with -export-ddl")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -61,7 +65,7 @@ func runMain() error {
 	defer closeAndLog(sourceDB, "source database")
 
 	var targetDB *sql.DB
-	if !cfg.Plan {
+	if cfg.requiresTarget() {
 		targetDB, err = openDB(cfg.TargetDSN, cfg.Workers+2)
 		if err != nil {
 			return fmt.Errorf("open target: %w", err)
@@ -86,6 +90,7 @@ func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.SourceDSN, "source", "", "source SQL Server DSN")
 	flag.StringVar(&cfg.TargetDSN, "target", "", "target SQL Server DSN")
+	flag.StringVar(&cfg.ExportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
 	flag.IntVar(&cfg.Workers, "workers", max(2, runtime.NumCPU()), "number of concurrent table copy workers")
 	flag.IntVar(&cfg.BatchSize, "batch-size", 5000, "rows per bulk batch hint")
 	flag.BoolVar(&cfg.Verbose, "verbose", true, "log per-table activity")
@@ -101,8 +106,8 @@ func parseFlags() config {
 	flag.StringVar(&excludeTables, "exclude-tables", "", "comma-separated table names, schema.table names, or wildcard patterns to skip")
 	flag.Parse()
 
-	if cfg.SourceDSN == "" || (!cfg.Plan && cfg.TargetDSN == "") {
-		if cfg.Plan {
+	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
+		if cfg.Plan || cfg.ExportDDLFile != "" {
 			fmt.Fprintln(os.Stderr, "source DSN is required")
 		} else {
 			fmt.Fprintln(os.Stderr, "source and target DSNs are required")
@@ -121,6 +126,10 @@ func parseFlags() config {
 	cfg.IncludeTables = parseList(includeTables)
 	cfg.ExcludeTables = parseList(excludeTables)
 	return cfg
+}
+
+func (cfg config) requiresTarget() bool {
+	return !cfg.Plan && cfg.ExportDDLFile == ""
 }
 
 func openDB(dsn string, maxConns int) (*sql.DB, error) {
@@ -218,6 +227,13 @@ func (c *copier) run(ctx context.Context) error {
 
 	if c.cfg.Plan {
 		c.printPlan()
+		return nil
+	}
+	if c.cfg.ExportDDLFile != "" {
+		if err := c.writeLiquibaseInitialQueryFile(); err != nil {
+			return err
+		}
+		log.Printf("wrote DDL export file to %s", c.cfg.ExportDDLFile)
 		return nil
 	}
 
