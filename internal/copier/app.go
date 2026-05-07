@@ -228,6 +228,7 @@ func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
 		return yamlConfig{}, false, nil
 	}
 
+	// #nosec G304 -- reading a user-selected local config path is intentional behavior.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) && !required && path == defaultConfigPath {

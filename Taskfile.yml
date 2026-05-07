@@ -28,7 +28,7 @@ tasks:
     desc: Run golangci-lint in a Docker container
     cmds:
       - go mod download
-      - docker run --rm -e GOMODCACHE=/go/pkg/mod -e GOCACHE=/root/.cache/go-build -v {{toSlash .ROOT_DIR}}:/app -v {{toSlash .GOMODCACHE}}:/go/pkg/mod -v {{toSlash .GOCACHE}}:/root/.cache/go-build -w /app golangci/golangci-lint:v2.11.4 golangci-lint run -v --timeout 5m
+      - docker run --rm -e GOMODCACHE=/go/pkg/mod -e GOCACHE=/root/.cache/go-build -v {{toSlash .ROOT_DIR}}:/app -v {{toSlash .GOMODCACHE}}:/go/pkg/mod -v {{toSlash .GOCACHE}}:/root/.cache/go-build -w /app golangci/golangci-lint:v2.12.2 golangci-lint run -v --timeout 5m
 
   test:
     desc: Run all tests
