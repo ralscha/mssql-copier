@@ -20,6 +20,15 @@ func selectTableCopySQL(table tableMeta) string {
 	return fmt.Sprintf("SELECT %s FROM %s", joinQuotedColumns(table.CopyColumns), table.FQTN())
 }
 
+func selectTableExportSQL(table tableMeta) string {
+	query := selectTableCopySQL(table)
+	orderBy := tableExportOrderBy(table)
+	if orderBy == "" {
+		return query
+	}
+	return query + " ORDER BY " + orderBy
+}
+
 func insertTableCopySQL(table tableMeta) string {
 	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table.FQTN(), joinQuotedColumns(table.CopyColumns), placeholders(len(table.CopyColumns)))
 }
@@ -149,6 +158,16 @@ func joinQuotedColumns(cols []columnMeta) string {
 		names = append(names, quoteIdent(col.Name))
 	}
 	return strings.Join(names, ", ")
+}
+
+func tableExportOrderBy(table tableMeta) string {
+	if table.PrimaryKey != nil && len(table.PrimaryKey.Columns) > 0 {
+		return joinKeyColumns(table.PrimaryKey.Columns)
+	}
+	if len(table.CopyColumns) == 0 {
+		return ""
+	}
+	return joinQuotedColumns(table.CopyColumns)
 }
 
 func columnNames(cols []columnMeta) []string {

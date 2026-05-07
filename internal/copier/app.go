@@ -17,6 +17,7 @@ type config struct {
 	SourceDSN      string
 	TargetDSN      string
 	ExportDDLFile  string
+	ExportDataFile string
 	Workers        int
 	BatchSize      int
 	Verbose        bool
@@ -52,8 +53,8 @@ func Main() {
 
 func runMain() error {
 	cfg := parseFlags()
-	if cfg.DropExisting && cfg.ExportDDLFile != "" {
-		return fmt.Errorf("-drop-existing cannot be combined with -export-ddl")
+	if err := cfg.validate(); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,6 +92,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.SourceDSN, "source", "", "source SQL Server DSN")
 	flag.StringVar(&cfg.TargetDSN, "target", "", "target SQL Server DSN")
 	flag.StringVar(&cfg.ExportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
+	flag.StringVar(&cfg.ExportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
 	flag.IntVar(&cfg.Workers, "workers", max(2, runtime.NumCPU()), "number of concurrent table copy workers")
 	flag.IntVar(&cfg.BatchSize, "batch-size", 5000, "rows per bulk batch hint")
 	flag.BoolVar(&cfg.Verbose, "verbose", true, "log per-table activity")
@@ -107,7 +109,7 @@ func parseFlags() config {
 	flag.Parse()
 
 	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
-		if cfg.Plan || cfg.ExportDDLFile != "" {
+		if cfg.Plan || cfg.ExportDDLFile != "" || cfg.ExportDataFile != "" {
 			fmt.Fprintln(os.Stderr, "source DSN is required")
 		} else {
 			fmt.Fprintln(os.Stderr, "source and target DSNs are required")
@@ -129,7 +131,20 @@ func parseFlags() config {
 }
 
 func (cfg config) requiresTarget() bool {
-	return !cfg.Plan && cfg.ExportDDLFile == ""
+	return !cfg.Plan && cfg.ExportDDLFile == "" && cfg.ExportDataFile == ""
+}
+
+func (cfg config) validate() error {
+	if cfg.ExportDDLFile != "" && cfg.ExportDataFile != "" {
+		return fmt.Errorf("-export-ddl cannot be combined with -export-data")
+	}
+	if cfg.DropExisting && cfg.ExportDDLFile != "" {
+		return fmt.Errorf("-drop-existing cannot be combined with -export-ddl")
+	}
+	if cfg.DropExisting && cfg.ExportDataFile != "" {
+		return fmt.Errorf("-drop-existing cannot be combined with -export-data")
+	}
+	return nil
 }
 
 func openDB(dsn string, maxConns int) (*sql.DB, error) {
@@ -234,6 +249,13 @@ func (c *copier) run(ctx context.Context) error {
 			return err
 		}
 		log.Printf("wrote DDL export file to %s", c.cfg.ExportDDLFile)
+		return nil
+	}
+	if c.cfg.ExportDataFile != "" {
+		if err := c.writeDataExportFile(ctx); err != nil {
+			return err
+		}
+		log.Printf("wrote data export file to %s", c.cfg.ExportDataFile)
 		return nil
 	}
 

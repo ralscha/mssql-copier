@@ -67,10 +67,22 @@ Write a source-only DDL baseline file for the selected schema objects. The gener
 ```sh
 mssql-copier \
   --source "sqlserver://..." \
-  --export-ddl ./liquibase/initial.sql
+  --export-ddl ./export/initial.sql
 ```
 
 The generated file contains ordered Liquibase changesets for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `--drop-existing` is not supported with this mode.
+
+### Data export
+
+Write a source-only data seed file for the selected tables. The generated file is plain SQL with semicolon-terminated `SET IDENTITY_INSERT` and `INSERT` statements, with no `GO` batches.
+
+```sh
+mssql-copier \
+  --source "sqlserver://..." \
+  --export-data ./export/initial-data.sql
+```
+
+The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables constraints on the exported tables before loading rows and re-checks them at the end so the script can run cleanly after a schema import even when foreign keys already exist. This mode exports table data only; it does not create schema objects, and `--drop-existing` is not supported with this mode.
 
 ### Filtering objects
 
@@ -114,6 +126,7 @@ mssql-copier \
 | `--target` | *(required unless `--plan`)* | Target SQL Server DSN |
 | `--plan` | `false` | Print execution plan without modifying target |
 | `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
+| `--export-data` | | Write plain SQL data inserts to a file; `--target` is not required |
 | `--workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
 | `--batch-size` | `5000` | Rows per bulk batch hint |
 | `--drop-existing` | `false` | Drop matching target tables before recreating |
