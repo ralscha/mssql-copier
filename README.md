@@ -20,6 +20,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Plan mode** — preview the execution plan without modifying the target
 - **Liquibase export mode** — writes an initial Liquibase formatted SQL file for the discovered schema objects
 - **Drop-existing mode** — optionally drop matching target tables before recreating them
+- **Fake data replacement** — replace configured column values during copy and data export using `gofakeit`
 - **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
 - **Integration tested** — includes testcontainers-based integration tests
 
@@ -136,6 +137,17 @@ CLI flags override values from YAML when both are provided.
 
 `--export-ddl` and `--export-data` must be passed as CLI flags. This lets export modes still reuse YAML values such as `source`, `workers`, and include/exclude filters.
 
+`fake-data` is YAML-only. Each entry maps a column selector to a [`gofakeit`](https://github.com/brianvoe/gofakeit) function. Selectors support:
+
+- exact column name: `name`
+- exact table and column: `users.name`
+- exact schema, table, and column: `dbo.users.name`
+- regex: any selector that is not a plain identifier path is treated as a case-insensitive regex and matched against `column`, `table.column`, and `schema.table.column`. Example: `name.*`
+
+Use `gofakeit` function names like `Email`, `FirstName`, or `LoremIpsumSentence`.
+
+Parameters are optional and are appended after the function name using `;` in declared order. Examples: `LoremIpsumSentence;10` and `Price;1;100`.
+
 Example `mssql-copier.yml`:
 
 ```yaml
@@ -155,6 +167,12 @@ include-tables:
   - sales.customers
 exclude-tables:
   - "*.audit_%"
+fake-data:
+  users.name: Name
+  email: Email
+  name.*: FirstName
+  summary: LoremIpsumSentence;10
+  amount: Price;1;100
 ```
 
 ### Flags
@@ -175,6 +193,31 @@ exclude-tables:
 | `--exclude-schemas` | | Comma-separated schema names or wildcard patterns (YAML: list) |
 | `--include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns (YAML: list) |
 | `--exclude-tables` | | Comma-separated table names or wildcard patterns (YAML: list) |
+
+### Fake data replacement
+
+Configured fake-data rules are applied in both copy mode and `--export-data` mode before values are written to the target or serialized into SQL inserts.
+
+Rule precedence is:
+
+1. exact `schema.table.column`
+2. exact `table.column`
+3. exact `column`
+4. regex selectors, matched in deterministic order
+
+Examples:
+
+```yaml
+fake-data:
+  customer.email: Email
+  ssn: SSN
+  dbo.people.name: Name
+  name.*: FirstName
+  description: LoremIpsumSentence;10
+  price: Price;1;100
+```
+
+The CLI validates every configured function and parameter list at startup and fails fast when a function name is unknown, parameters do not fit the selected function, or the function returns a complex value type that the copier cannot safely write to SQL Server.
 
 ### DSN format
 

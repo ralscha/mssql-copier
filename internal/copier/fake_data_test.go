@@ -1,0 +1,142 @@
+package copier
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNewDataFakerRejectsUnknownFunction(t *testing.T) {
+	_, err := newDataFaker(map[string]string{"name": "NoSuchFunction"})
+	if err == nil {
+		t.Fatal("expected unknown function error")
+	}
+	if !strings.Contains(err.Error(), "unknown gofakeit function") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewDataFakerRejectsInvalidParameterValue(t *testing.T) {
+	_, err := newDataFaker(map[string]string{"body": "Words.LoremIpsumSentence;0"})
+	if err == nil {
+		t.Fatal("expected invalid parameter error")
+	}
+	if !strings.Contains(err.Error(), "could not initialize") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewDataFakerAcceptsSemicolonParameters(t *testing.T) {
+	_, err := newDataFaker(map[string]string{
+		"testcolumn":   "LoremIpsumSentence;10",
+		"secondcolumn": "Price;1;100",
+	})
+	if err != nil {
+		t.Fatalf("expected semicolon parameters to resolve, got %v", err)
+	}
+}
+
+func TestNewDataFakerRejectsTooManyParameters(t *testing.T) {
+	_, err := newDataFaker(map[string]string{"price": "Price;1;100;200"})
+	if err == nil {
+		t.Fatal("expected too-many-parameters error")
+	}
+	if !strings.Contains(err.Error(), "only accepts") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDataFakerUsesConfiguredParameters(t *testing.T) {
+	faker, err := newDataFaker(map[string]string{"body": "LoremIpsumSentence;10"})
+	if err != nil {
+		t.Fatalf("newDataFaker() unexpected error: %v", err)
+	}
+
+	value, ok, err := faker.fakeValue(nil, tableMeta{Schema: "dbo", Name: "posts"}, columnMeta{Name: "body", SystemTypeName: "nvarchar"})
+	if err != nil {
+		t.Fatalf("fakeValue() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rule match")
+	}
+	text, isString := value.(string)
+	if !isString {
+		t.Fatalf("fakeValue() type = %T, want string", value)
+	}
+	if len(strings.Fields(text)) != 10 {
+		t.Fatalf("fakeValue() word count = %d, want 10; value=%q", len(strings.Fields(text)), text)
+	}
+}
+
+func TestNewDataFakerAcceptsCategoryQualifiedFunction(t *testing.T) {
+	_, err := newDataFaker(map[string]string{"email": "Person.Email"})
+	if err != nil {
+		t.Fatalf("expected Person.Email to resolve, got %v", err)
+	}
+}
+
+func TestNewDataFakerRejectsWrongCategoryQualifiedFunction(t *testing.T) {
+	_, err := newDataFaker(map[string]string{"email": "Company.Email"})
+	if err == nil {
+		t.Fatal("expected wrong-category function error")
+	}
+	if !strings.Contains(err.Error(), "unknown gofakeit function") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDataFakerMatchesSpecificity(t *testing.T) {
+	faker, err := newDataFaker(map[string]string{
+		"dbo.users.name": "Name",
+		"users.name":     "FirstName",
+		"name":           "LastName",
+	})
+	if err != nil {
+		t.Fatalf("newDataFaker() unexpected error: %v", err)
+	}
+
+	table := tableMeta{Schema: "dbo", Name: "users"}
+	col := columnMeta{Name: "name", SystemTypeName: "nvarchar"}
+	value, ok, err := faker.fakeValue(nil, table, col)
+	if err != nil {
+		t.Fatalf("fakeValue() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rule match")
+	}
+	if _, isString := value.(string); !isString {
+		t.Fatalf("fakeValue() type = %T, want string", value)
+	}
+	if faker.fullNameRules["dbo.users.name"].lookupName != "name" {
+		t.Fatalf("expected full-name rule to win, got %+v", faker.fullNameRules["dbo.users.name"])
+	}
+	_ = value
+}
+
+func TestDataFakerMatchesRegexSelector(t *testing.T) {
+	faker, err := newDataFaker(map[string]string{"name.*": "FirstName"})
+	if err != nil {
+		t.Fatalf("newDataFaker() unexpected error: %v", err)
+	}
+
+	value, ok, err := faker.fakeValue(nil, tableMeta{Schema: "dbo", Name: "users"}, columnMeta{Name: "name_display", SystemTypeName: "nvarchar"})
+	if err != nil {
+		t.Fatalf("fakeValue() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected regex rule match")
+	}
+	if _, isString := value.(string); !isString {
+		t.Fatalf("fakeValue() type = %T, want string", value)
+	}
+}
+
+func TestReplaceValueFallsBackToOriginalNormalization(t *testing.T) {
+	c := &copier{}
+	got, err := c.replaceValue(tableMeta{}, columnMeta{SystemTypeName: "decimal"}, []byte("123.45"))
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	if got != "123.45" {
+		t.Fatalf("replaceValue() = %#v, want %q", got, "123.45")
+	}
+}

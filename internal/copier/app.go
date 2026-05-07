@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brianvoe/gofakeit/v7"
 	_ "github.com/denisenkom/go-mssqldb"
 	"gopkg.in/yaml.v3"
 )
@@ -32,10 +33,13 @@ type config struct {
 	ExcludeSchemas []string
 	IncludeTables  []string
 	ExcludeTables  []string
+	FakeData       map[string]string
 }
 
 type copier struct {
 	cfg        config
+	faker      *gofakeit.Faker
+	dataFaker  *dataFaker
 	sourceDB   *sql.DB
 	targetDB   *sql.DB
 	tables     []tableMeta
@@ -50,19 +54,20 @@ type copier struct {
 }
 
 type yamlConfig struct {
-	SourceDSN      string   `yaml:"source"`
-	TargetDSN      string   `yaml:"target"`
-	Workers        *int     `yaml:"workers"`
-	BatchSize      *int     `yaml:"batch-size"`
-	Verbose        *bool    `yaml:"verbose"`
-	Plan           *bool    `yaml:"plan"`
-	DropExisting   *bool    `yaml:"drop-existing"`
-	IncludeSchemas []string `yaml:"include-schemas"`
-	ExcludeSchemas []string `yaml:"exclude-schemas"`
-	IncludeTables  []string `yaml:"include-tables"`
-	ExcludeTables  []string `yaml:"exclude-tables"`
-	ExportDDLFile  *string  `yaml:"export-ddl"`
-	ExportDataFile *string  `yaml:"export-data"`
+	SourceDSN      string            `yaml:"source"`
+	TargetDSN      string            `yaml:"target"`
+	Workers        *int              `yaml:"workers"`
+	BatchSize      *int              `yaml:"batch-size"`
+	Verbose        *bool             `yaml:"verbose"`
+	Plan           *bool             `yaml:"plan"`
+	DropExisting   *bool             `yaml:"drop-existing"`
+	IncludeSchemas []string          `yaml:"include-schemas"`
+	ExcludeSchemas []string          `yaml:"exclude-schemas"`
+	IncludeTables  []string          `yaml:"include-tables"`
+	ExcludeTables  []string          `yaml:"exclude-tables"`
+	FakeData       map[string]string `yaml:"fake-data"`
+	ExportDDLFile  *string           `yaml:"export-ddl"`
+	ExportDataFile *string           `yaml:"export-data"`
 }
 
 func Main() {
@@ -75,6 +80,10 @@ func Main() {
 func runMain() error {
 	cfg := parseFlags()
 	if err := cfg.validate(); err != nil {
+		return err
+	}
+	dataFaker, err := newDataFaker(cfg.FakeData)
+	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,9 +105,11 @@ func runMain() error {
 	}
 
 	c := &copier{
-		cfg:      cfg,
-		sourceDB: sourceDB,
-		targetDB: targetDB,
+		cfg:       cfg,
+		faker:     gofakeit.New(0),
+		dataFaker: dataFaker,
+		sourceDB:  sourceDB,
+		targetDB:  targetDB,
 	}
 
 	if err := c.run(ctx); err != nil {
@@ -275,6 +286,7 @@ func (yamlCfg yamlConfig) applyTo(cfg *config) {
 	cfg.ExcludeSchemas = normalizeList(yamlCfg.ExcludeSchemas)
 	cfg.IncludeTables = normalizeList(yamlCfg.IncludeTables)
 	cfg.ExcludeTables = normalizeList(yamlCfg.ExcludeTables)
+	cfg.FakeData = normalizeFakeData(yamlCfg.FakeData)
 }
 
 func normalizeList(values []string) []string {
@@ -286,6 +298,25 @@ func normalizeList(values []string) []string {
 		if v := normalizeFilterName(value); v != "" {
 			normalized = append(normalized, v)
 		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func normalizeFakeData(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]string, len(values))
+	for selector, functionName := range values {
+		sel := strings.TrimSpace(selector)
+		fn := strings.TrimSpace(functionName)
+		if sel == "" || fn == "" {
+			continue
+		}
+		normalized[sel] = fn
 	}
 	if len(normalized) == 0 {
 		return nil

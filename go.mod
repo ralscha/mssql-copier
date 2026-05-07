@@ -3,8 +3,10 @@ module mssql-copier
 go 1.26.2
 
 require (
+	github.com/brianvoe/gofakeit/v7 v7.14.1
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/testcontainers/testcontainers-go v0.42.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -59,5 +61,4 @@ require (
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

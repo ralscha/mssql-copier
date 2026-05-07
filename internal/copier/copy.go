@@ -343,7 +343,10 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) error {
 		}
 		params := make([]any, len(table.CopyColumns))
 		for i, col := range table.CopyColumns {
-			params[i] = normalizeValue(values[i], col)
+			params[i], err = c.replaceValue(table, col, values[i])
+			if err != nil {
+				return err
+			}
 		}
 		if _, err := stmt.ExecContext(ctx, params...); err != nil {
 			return fmt.Errorf("insert row %s: %w", table.FQTN(), err)

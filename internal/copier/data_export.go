@@ -122,7 +122,11 @@ func (c *copier) buildTableDataSection(ctx context.Context, table tableMeta) (st
 
 		literals := make([]string, len(table.CopyColumns))
 		for i, col := range table.CopyColumns {
-			literal, err := sqlLiteral(normalizeValue(values[i], col), col, columnTypes[i])
+			replaced, err := c.replaceValue(table, col, values[i])
+			if err != nil {
+				return "", err
+			}
+			literal, err := sqlLiteral(replaced, col, columnTypes[i])
 			if err != nil {
 				return "", fmt.Errorf("format data export value %s.%s: %w", table.FQTN(), col.Name, err)
 			}

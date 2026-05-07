@@ -50,6 +50,7 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 	verbose := false
 	plan := true
 	dropExisting := true
+	whitespaceKey := " users.name "
 	yCfg := yamlConfig{
 		SourceDSN:      " sqlserver://source ",
 		TargetDSN:      " sqlserver://target ",
@@ -62,6 +63,11 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 		ExcludeSchemas: []string{"", "  "},
 		IncludeTables:  []string{"[sales].[orders]", "users"},
 		ExcludeTables:  []string{"*.audit_%"},
+		FakeData: map[string]string{
+			whitespaceKey:  " Person.Name ",
+			"customer_ssn": "ssn",
+			"ignored":      " ",
+		},
 	}
 
 	cfg := config{Workers: 2, BatchSize: 5000, Verbose: true}
@@ -90,5 +96,8 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 	}
 	if len(cfg.ExcludeTables) != 1 || cfg.ExcludeTables[0] != "*.audit_%" {
 		t.Fatalf("exclude-tables = %#v, want [*.audit_%%]", cfg.ExcludeTables)
+	}
+	if len(cfg.FakeData) != 2 || cfg.FakeData["users.name"] != "Person.Name" || cfg.FakeData["customer_ssn"] != "ssn" {
+		t.Fatalf("fake-data = %#v, want normalized fake-data map", cfg.FakeData)
 	}
 }

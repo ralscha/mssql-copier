@@ -21,3 +21,8 @@ include-tables:
   - sales.customers
 exclude-tables:
   - "*.audit_%"
+
+fake-data:
+  users.name: Name
+  email: Email
+  name.*: FirstName
