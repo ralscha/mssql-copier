@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+type exportRow struct {
+	values []any
+}
+
 func (c *copier) writeDataExportFile(ctx context.Context) error {
 	script, err := c.buildDataExportSQL(ctx)
 	if err != nil {
@@ -39,6 +43,10 @@ func (c *copier) buildDataExportSQL(ctx context.Context) (string, error) {
 	}
 
 	tables := sortedTablesForDataExport(c.tables)
+	exportRowsByTable, err := c.buildExportRowsByTable(ctx, tables)
+	if err != nil {
+		return "", err
+	}
 
 	var builder strings.Builder
 	builder.WriteString("-- mssql-copier data export\n")
@@ -50,7 +58,7 @@ func (c *copier) buildDataExportSQL(ctx context.Context) (string, error) {
 	}
 
 	for _, table := range tables {
-		section, err := c.buildTableDataSection(ctx, table)
+		section, err := c.buildTableDataSection(table, exportRowsByTable[normalizedTableKey(table)])
 		if err != nil {
 			return "", err
 		}
@@ -81,26 +89,113 @@ func sortedTablesForDataExport(tables []tableMeta) []tableMeta {
 	return ordered
 }
 
-func (c *copier) buildTableDataSection(ctx context.Context, table tableMeta) (string, error) {
+func (c *copier) buildExportRowsByTable(ctx context.Context, tables []tableMeta) (map[string][]exportRow, error) {
+	rowsByTable := make(map[string][]exportRow, len(tables))
+	for _, table := range tables {
+		rows, err := c.fetchTableExportRows(ctx, table, c.cfg.ExportDataRows)
+		if err != nil {
+			return nil, err
+		}
+		rowsByTable[normalizedTableKey(table)] = rows
+	}
+	if c.cfg.ExportDataRows <= 0 {
+		return rowsByTable, nil
+	}
+	return resolveSampledExportRows(ctx, tables, rowsByTable, c.fetchParentRowsForExport)
+}
+
+func (c *copier) fetchTableExportRows(ctx context.Context, table tableMeta, rowLimit int) ([]exportRow, error) {
 	if len(table.CopyColumns) == 0 {
-		return fmt.Sprintf("-- table %s\n-- skipped: no copyable columns\n", table.FQTN()), nil
+		return nil, nil
 	}
 
-	rows, err := c.sourceDB.QueryContext(ctx, selectTableExportSQL(table))
+	rows, err := c.sourceDB.QueryContext(ctx, selectTableExportSQL(table, rowLimit))
 	if err != nil {
-		return "", fmt.Errorf("query data export %s: %w", table.FQTN(), err)
+		return nil, fmt.Errorf("query data export %s: %w", table.FQTN(), err)
 	}
 	defer closeAndLog(rows, "data export rows")
-
-	columnTypes, err := rows.ColumnTypes()
-	if err != nil {
-		return "", fmt.Errorf("describe data export columns %s: %w", table.FQTN(), err)
-	}
 
 	values := make([]any, len(table.CopyColumns))
 	scanDest := make([]any, len(table.CopyColumns))
 	for i := range values {
 		scanDest[i] = &values[i]
+	}
+
+	var result []exportRow
+	for rows.Next() {
+		if err := rows.Scan(scanDest...); err != nil {
+			return nil, fmt.Errorf("scan data export row %s: %w", table.FQTN(), err)
+		}
+		rowValues := make([]any, len(table.CopyColumns))
+		for i, col := range table.CopyColumns {
+			rowValues[i] = normalizeValue(values[i], col)
+		}
+		result = append(result, exportRow{values: rowValues})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate data export rows %s: %w", table.FQTN(), err)
+	}
+	return result, nil
+}
+
+func (c *copier) fetchParentRowsForExport(ctx context.Context, table tableMeta, refColumns []string, tuples [][]any) ([]exportRow, error) {
+	if len(table.CopyColumns) == 0 || len(refColumns) == 0 || len(tuples) == 0 {
+		return nil, nil
+	}
+
+	whereParts := make([]string, 0, len(tuples))
+	args := make([]any, 0, len(refColumns)*len(tuples))
+	paramOrdinal := 1
+	for _, tuple := range tuples {
+		if len(tuple) != len(refColumns) {
+			return nil, fmt.Errorf("query parent rows %s: tuple width %d does not match reference column width %d", table.FQTN(), len(tuple), len(refColumns))
+		}
+		predicates := make([]string, 0, len(refColumns))
+		for i, columnName := range refColumns {
+			predicates = append(predicates, fmt.Sprintf("%s = @p%d", quoteIdent(columnName), paramOrdinal))
+			args = append(args, tuple[i])
+			paramOrdinal++
+		}
+		whereParts = append(whereParts, "("+strings.Join(predicates, " AND ")+")")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s", joinQuotedColumns(table.CopyColumns), table.FQTN(), strings.Join(whereParts, " OR "))
+	if orderBy := tableExportOrderBy(table); orderBy != "" {
+		query += " ORDER BY " + orderBy
+	}
+
+	rows, err := c.sourceDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query referenced parent rows %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(rows, "referenced parent rows")
+
+	values := make([]any, len(table.CopyColumns))
+	scanDest := make([]any, len(table.CopyColumns))
+	for i := range values {
+		scanDest[i] = &values[i]
+	}
+
+	var result []exportRow
+	for rows.Next() {
+		if err := rows.Scan(scanDest...); err != nil {
+			return nil, fmt.Errorf("scan referenced parent row %s: %w", table.FQTN(), err)
+		}
+		rowValues := make([]any, len(table.CopyColumns))
+		for i, col := range table.CopyColumns {
+			rowValues[i] = normalizeValue(values[i], col)
+		}
+		result = append(result, exportRow{values: rowValues})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate referenced parent rows %s: %w", table.FQTN(), err)
+	}
+	return result, nil
+}
+
+func (c *copier) buildTableDataSection(table tableMeta, rowsData []exportRow) (string, error) {
+	if len(table.CopyColumns) == 0 {
+		return fmt.Sprintf("-- table %s\n-- skipped: no copyable columns\n", table.FQTN()), nil
 	}
 
 	var builder strings.Builder
@@ -115,18 +210,14 @@ func (c *copier) buildTableDataSection(ctx context.Context, table tableMeta) (st
 		builder.WriteString(" ON;\n")
 	}
 
-	for rows.Next() {
-		if err := rows.Scan(scanDest...); err != nil {
-			return "", fmt.Errorf("scan data export row %s: %w", table.FQTN(), err)
-		}
-
+	for _, row := range rowsData {
 		literals := make([]string, len(table.CopyColumns))
 		for i, col := range table.CopyColumns {
-			replaced, err := c.replaceValue(table, col, values[i])
+			replaced, err := c.replaceValue(table, col, row.values[i])
 			if err != nil {
 				return "", err
 			}
-			literal, err := sqlLiteral(replaced, col, columnTypes[i])
+			literal, err := sqlLiteral(replaced, col, nil)
 			if err != nil {
 				return "", fmt.Errorf("format data export value %s.%s: %w", table.FQTN(), col.Name, err)
 			}
@@ -141,9 +232,6 @@ func (c *copier) buildTableDataSection(ctx context.Context, table tableMeta) (st
 		builder.WriteString(strings.Join(literals, ", "))
 		builder.WriteString(");\n")
 		rowCount++
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("iterate data export rows %s: %w", table.FQTN(), err)
 	}
 
 	if table.HasIdentity {

@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"context"
 	"database/sql"
 	"math"
 	"strings"
@@ -19,7 +20,7 @@ func TestSelectTableExportSQLOrdersByPrimaryKey(t *testing.T) {
 		PrimaryKey: &keyConstraint{Columns: []keyColumn{{Name: "id", Desc: true}}},
 	}
 
-	got := selectTableExportSQL(table)
+	got := selectTableExportSQL(table, 0)
 	want := "SELECT [id], [created_at] FROM [sales].[orders] ORDER BY [id] DESC"
 	if got != want {
 		t.Fatalf("selectTableExportSQL() = %q, want %q", got, want)
@@ -36,8 +37,26 @@ func TestSelectTableExportSQLFallsBackToCopyColumns(t *testing.T) {
 		},
 	}
 
-	got := selectTableExportSQL(table)
+	got := selectTableExportSQL(table, 0)
 	want := "SELECT [id], [name] FROM [sales].[orders] ORDER BY [id], [name]"
+	if got != want {
+		t.Fatalf("selectTableExportSQL() = %q, want %q", got, want)
+	}
+}
+
+func TestSelectTableExportSQLAppliesRowLimit(t *testing.T) {
+	table := tableMeta{
+		Schema: "sales",
+		Name:   "orders",
+		CopyColumns: []columnMeta{
+			{Name: "id"},
+			{Name: "created_at"},
+		},
+		PrimaryKey: &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+	}
+
+	got := selectTableExportSQL(table, 25)
+	want := "SELECT TOP (25) [id], [created_at] FROM [sales].[orders] ORDER BY [id] ASC"
 	if got != want {
 		t.Fatalf("selectTableExportSQL() = %q, want %q", got, want)
 	}
@@ -91,6 +110,114 @@ func TestBuildDataExportSQLNoTables(t *testing.T) {
 	}
 	if got != "-- mssql-copier data export\n" {
 		t.Fatalf("buildDataExportSQL() = %q", got)
+	}
+}
+
+func TestResolveSampledExportRowsAddsReferencedParents(t *testing.T) {
+	parent := tableMeta{
+		Schema: "dbo",
+		Name:   "customers",
+		CopyColumns: []columnMeta{
+			{Name: "id"},
+			{Name: "name"},
+		},
+		PrimaryKey: &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+	}
+	child := tableMeta{
+		Schema: "dbo",
+		Name:   "orders",
+		CopyColumns: []columnMeta{
+			{Name: "id"},
+			{Name: "customer_id"},
+		},
+		PrimaryKey: &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+		ForeignKeys: []foreignKey{
+			{Name: "FK_orders_customers", Columns: []string{"customer_id"}, RefSchema: "dbo", RefTable: "customers", RefColumns: []string{"id"}},
+		},
+	}
+
+	baseRows := map[string][]exportRow{
+		normalizedTableKey(parent): nil,
+		normalizedTableKey(child): {
+			{values: []any{int64(10), int64(7)}},
+		},
+	}
+
+	fetchCalls := 0
+	got, err := resolveSampledExportRows(context.Background(), []tableMeta{parent, child}, baseRows, func(ctx context.Context, table tableMeta, columns []string, tuples [][]any) ([]exportRow, error) {
+		fetchCalls++
+		if table.Name != "customers" {
+			t.Fatalf("unexpected fetch table %s", table.FQTN())
+		}
+		if len(columns) != 1 || columns[0] != "id" {
+			t.Fatalf("unexpected fetch columns %#v", columns)
+		}
+		if len(tuples) != 1 || len(tuples[0]) != 1 || tuples[0][0] != int64(7) {
+			t.Fatalf("unexpected tuples %#v", tuples)
+		}
+		return []exportRow{{values: []any{int64(7), "Acme"}}}, nil
+	})
+	if err != nil {
+		t.Fatalf("resolveSampledExportRows() unexpected error: %v", err)
+	}
+	if fetchCalls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
+	}
+	if len(got[normalizedTableKey(parent)]) != 1 {
+		t.Fatalf("parent row count = %d, want 1", len(got[normalizedTableKey(parent)]))
+	}
+	if len(got[normalizedTableKey(child)]) != 1 {
+		t.Fatalf("child row count = %d, want 1", len(got[normalizedTableKey(child)]))
+	}
+}
+
+func TestResolveSampledExportRowsRecursesToGrandparents(t *testing.T) {
+	grandparent := tableMeta{
+		Schema:      "dbo",
+		Name:        "accounts",
+		CopyColumns: []columnMeta{{Name: "id"}},
+		PrimaryKey:  &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+	}
+	parent := tableMeta{
+		Schema:      "dbo",
+		Name:        "customers",
+		CopyColumns: []columnMeta{{Name: "id"}, {Name: "account_id"}},
+		PrimaryKey:  &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+		ForeignKeys: []foreignKey{{Name: "FK_customers_accounts", Columns: []string{"account_id"}, RefSchema: "dbo", RefTable: "accounts", RefColumns: []string{"id"}}},
+	}
+	child := tableMeta{
+		Schema:      "dbo",
+		Name:        "orders",
+		CopyColumns: []columnMeta{{Name: "id"}, {Name: "customer_id"}},
+		PrimaryKey:  &keyConstraint{Columns: []keyColumn{{Name: "id"}}},
+		ForeignKeys: []foreignKey{{Name: "FK_orders_customers", Columns: []string{"customer_id"}, RefSchema: "dbo", RefTable: "customers", RefColumns: []string{"id"}}},
+	}
+
+	baseRows := map[string][]exportRow{
+		normalizedTableKey(grandparent): nil,
+		normalizedTableKey(parent):      nil,
+		normalizedTableKey(child):       {{values: []any{int64(100), int64(7)}}},
+	}
+
+	got, err := resolveSampledExportRows(context.Background(), []tableMeta{grandparent, parent, child}, baseRows, func(ctx context.Context, table tableMeta, columns []string, tuples [][]any) ([]exportRow, error) {
+		switch table.Name {
+		case "customers":
+			return []exportRow{{values: []any{int64(7), int64(3)}}}, nil
+		case "accounts":
+			return []exportRow{{values: []any{int64(3)}}}, nil
+		default:
+			t.Fatalf("unexpected fetch table %s", table.FQTN())
+			return nil, nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("resolveSampledExportRows() unexpected error: %v", err)
+	}
+	if len(got[normalizedTableKey(parent)]) != 1 {
+		t.Fatalf("parent row count = %d, want 1", len(got[normalizedTableKey(parent)]))
+	}
+	if len(got[normalizedTableKey(grandparent)]) != 1 {
+		t.Fatalf("grandparent row count = %d, want 1", len(got[normalizedTableKey(grandparent)]))
 	}
 }
 

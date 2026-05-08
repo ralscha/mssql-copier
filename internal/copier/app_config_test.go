@@ -47,6 +47,41 @@ func TestLoadYAMLConfigRejectsExportFlags(t *testing.T) {
 	}
 }
 
+func TestConfigValidateExportDataRows(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{
+			name: "negative row limit",
+			cfg:  config{ExportDataFile: "seed.sql", ExportDataRows: -1},
+			want: "-export-data-rows must be greater than or equal to 0",
+		},
+		{
+			name: "row limit without export-data",
+			cfg:  config{ExportDataRows: 10},
+			want: "-export-data-rows requires -export-data",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("validate() error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+
+	if err := (config{ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
+		t.Fatalf("expected export-data row limit to validate, got %v", err)
+	}
+}
+
 func TestConfigureUsageUsesDoubleDashFlags(t *testing.T) {
 	fs := flag.NewFlagSet("mssql-copier", flag.ContinueOnError)
 	buf := &bytes.Buffer{}

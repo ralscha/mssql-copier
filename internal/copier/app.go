@@ -33,6 +33,7 @@ type config struct {
 	TargetDSN      string
 	ExportDDLFile  string
 	ExportDataFile string
+	ExportDataRows int
 	Workers        int
 	BatchSize      int
 	Verbose        bool
@@ -140,6 +141,7 @@ func parseFlags() config {
 	var targetDSN string
 	var exportDDLFile string
 	var exportDataFile string
+	var exportDataRows int
 	workers := defaultWorkers
 	batchSize := defaultBatchSize
 	verbose := true
@@ -152,6 +154,7 @@ func parseFlags() config {
 	flag.StringVar(&targetDSN, "target", "", "target SQL Server DSN")
 	flag.StringVar(&exportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
 	flag.StringVar(&exportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
+	flag.IntVar(&exportDataRows, "export-data-rows", 0, "limit export-data to the first N rows per table")
 	flag.IntVar(&workers, "workers", defaultWorkers, "number of concurrent table copy workers")
 	flag.IntVar(&batchSize, "batch-size", defaultBatchSize, "rows per bulk batch hint")
 	flag.BoolVar(&verbose, "verbose", true, "log per-table activity")
@@ -224,6 +227,7 @@ func parseFlags() config {
 
 	cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
 	cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
+	cfg.ExportDataRows = exportDataRows
 
 	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
 		if cfg.Plan || cfg.ExportDDLFile != "" || cfg.ExportDataFile != "" {
@@ -441,6 +445,12 @@ func (cfg config) requiresTarget() bool {
 func (cfg config) validate() error {
 	if cfg.ExportDDLFile != "" && cfg.ExportDataFile != "" {
 		return fmt.Errorf("-export-ddl cannot be combined with -export-data")
+	}
+	if cfg.ExportDataRows < 0 {
+		return fmt.Errorf("-export-data-rows must be greater than or equal to 0")
+	}
+	if cfg.ExportDataRows > 0 && cfg.ExportDataFile == "" {
+		return fmt.Errorf("-export-data-rows requires -export-data")
 	}
 	if cfg.DropExisting && cfg.ExportDDLFile != "" {
 		return fmt.Errorf("-drop-existing cannot be combined with -export-ddl")

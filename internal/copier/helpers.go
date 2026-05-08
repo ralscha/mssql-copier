@@ -20,8 +20,12 @@ func selectTableCopySQL(table tableMeta) string {
 	return fmt.Sprintf("SELECT %s FROM %s", joinQuotedColumns(table.CopyColumns), table.FQTN())
 }
 
-func selectTableExportSQL(table tableMeta) string {
-	query := selectTableCopySQL(table)
+func selectTableExportSQL(table tableMeta, rowLimit int) string {
+	selectList := joinQuotedColumns(table.CopyColumns)
+	if rowLimit > 0 {
+		selectList = fmt.Sprintf("TOP (%d) %s", rowLimit, selectList)
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s", selectList, table.FQTN())
 	orderBy := tableExportOrderBy(table)
 	if orderBy == "" {
 		return query

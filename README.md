@@ -87,6 +87,17 @@ mssql-copier \
 
 The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables constraints on the exported tables before loading rows and re-checks them at the end so the script can run cleanly after a schema import even when foreign keys already exist. This mode exports table data only; it does not create schema objects, and `--drop-existing` is not supported with this mode.
 
+For integration testing, you can cap the export to the first `N` rows per selected table:
+
+```sh
+mssql-copier \
+  --source "sqlserver://..." \
+  --export-data ./export/test-seed.sql \
+  --export-data-rows 25
+```
+
+The row cap starts from the deterministic per-table sample and then pulls in any referenced parent rows needed to keep copied foreign keys valid inside the exported set.
+
 ### Filtering objects
 
 Filters are applied by schema name and object name across copied tables and other discovered objects.
@@ -139,6 +150,8 @@ CLI flags override values from YAML when both are provided.
 
 `--export-ddl` and `--export-data` must be passed as CLI flags. This lets export modes still reuse YAML values such as `source`, `workers`, and include/exclude filters.
 
+`--export-data-rows` is also CLI-only and only applies together with `--export-data`.
+
 `fake-data` is YAML-only. Each entry maps a column selector to a [`gofakeit`](https://github.com/brianvoe/gofakeit) function. Selectors support:
 
 - exact column name: `name`
@@ -187,6 +200,7 @@ fake-data:
 | `--plan` | `false` | Print execution plan without modifying target |
 | `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
 | `--export-data` | | Write plain SQL data inserts to a file; `--target` is not required |
+| `--export-data-rows` | `0` | Limit `--export-data` to the first N rows per selected table |
 | `--workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
 | `--batch-size` | `5000` | Rows per bulk batch hint |
 | `--drop-existing` | `false` | Drop matching target tables before recreating |
