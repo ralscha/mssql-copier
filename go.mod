@@ -1,6 +1,6 @@
 module mssql-copier
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/brianvoe/gofakeit/v7 v7.14.1
@@ -59,6 +59,6 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 )
