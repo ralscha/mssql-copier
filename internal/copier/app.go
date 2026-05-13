@@ -34,6 +34,7 @@ type config struct {
 	ExportDDLFile  string
 	ExportDataFile string
 	ExportDataRows int
+	ReportMDFile   string
 	Workers        int
 	BatchSize      int
 	Verbose        bool
@@ -61,6 +62,7 @@ type copier struct {
 	procedures []procedureMeta
 	triggers   []triggerMeta
 	synonyms   []synonymMeta
+	report     copyReport
 }
 
 type yamlConfig struct {
@@ -142,6 +144,7 @@ func parseFlags() config {
 	var exportDDLFile string
 	var exportDataFile string
 	var exportDataRows int
+	var reportMDFile string
 	workers := defaultWorkers
 	batchSize := defaultBatchSize
 	verbose := true
@@ -155,6 +158,7 @@ func parseFlags() config {
 	flag.StringVar(&exportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
 	flag.StringVar(&exportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
 	flag.IntVar(&exportDataRows, "export-data-rows", 0, "limit export-data to the first N rows per table")
+	flag.StringVar(&reportMDFile, "report-md", "", "write a markdown copy report to the given path after a successful run")
 	flag.IntVar(&workers, "workers", defaultWorkers, "number of concurrent table copy workers")
 	flag.IntVar(&batchSize, "batch-size", defaultBatchSize, "rows per bulk batch hint")
 	flag.BoolVar(&verbose, "verbose", true, "log per-table activity")
@@ -228,6 +232,7 @@ func parseFlags() config {
 	cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
 	cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
 	cfg.ExportDataRows = exportDataRows
+	cfg.ReportMDFile = strings.TrimSpace(reportMDFile)
 
 	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
 		if cfg.Plan || cfg.ExportDDLFile != "" || cfg.ExportDataFile != "" {
@@ -445,6 +450,15 @@ func (cfg config) requiresTarget() bool {
 func (cfg config) validate() error {
 	if cfg.ExportDDLFile != "" && cfg.ExportDataFile != "" {
 		return fmt.Errorf("-export-ddl cannot be combined with -export-data")
+	}
+	if cfg.ReportMDFile != "" && cfg.Plan {
+		return fmt.Errorf("-report-md cannot be combined with -plan")
+	}
+	if cfg.ReportMDFile != "" && cfg.ExportDDLFile != "" {
+		return fmt.Errorf("-report-md cannot be combined with -export-ddl")
+	}
+	if cfg.ReportMDFile != "" && cfg.ExportDataFile != "" {
+		return fmt.Errorf("-report-md cannot be combined with -export-data")
 	}
 	if cfg.ExportDataRows < 0 {
 		return fmt.Errorf("-export-data-rows must be greater than or equal to 0")
@@ -703,6 +717,9 @@ func (c *copier) run(ctx context.Context) error {
 		return err
 	}
 	if err := c.createTriggers(ctx); err != nil {
+		return err
+	}
+	if err := c.writeMarkdownReport(time.Since(start)); err != nil {
 		return err
 	}
 

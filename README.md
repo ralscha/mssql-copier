@@ -19,6 +19,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Synonym copy** — copies synonyms with rerun-safe drop-and-create behavior
 - **Plan mode** — preview the execution plan without modifying the target
 - **Liquibase export mode** — writes an initial Liquibase formatted SQL file for the discovered schema objects
+- **Markdown copy report** — writes a post-run markdown summary with per-table copied row counts and run highlights
 - **Drop-existing mode** — optionally drop matching target tables before recreating them
 - **Fake data replacement** — replace configured column values during copy and data export using `gofakeit`
 - **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
@@ -97,6 +98,19 @@ mssql-copier \
 ```
 
 The row cap starts from the deterministic per-table sample and then pulls in any referenced parent rows needed to keep copied foreign keys valid inside the exported set.
+
+### Markdown copy report
+
+Write a markdown summary after a successful copy run. The generated report includes overall totals, a few run highlights, and a per-table breakdown with copied rows, approximate source rows, copy mode, and notable details such as identity insert or bulk-copy fallback reasons.
+
+```sh
+mssql-copier \
+  --source "sqlserver://..." \
+  --target "sqlserver://..." \
+  --report-md ./export/copy-report.md
+```
+
+This mode augments a normal copy run; it does not replace the copy itself. Because the report is based on actual copied rows, `--report-md` cannot be combined with `--plan`, `--export-ddl`, or `--export-data`.
 
 ### Filtering objects
 
@@ -201,6 +215,7 @@ fake-data:
 | `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
 | `--export-data` | | Write plain SQL data inserts to a file; `--target` is not required |
 | `--export-data-rows` | `0` | Limit `--export-data` to the first N rows per selected table |
+| `--report-md` | | Write a markdown copy report after a successful target copy |
 | `--workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
 | `--batch-size` | `5000` | Rows per bulk batch hint |
 | `--drop-existing` | `false` | Drop matching target tables before recreating |

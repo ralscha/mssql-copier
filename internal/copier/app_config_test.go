@@ -63,6 +63,21 @@ func TestConfigValidateExportDataRows(t *testing.T) {
 			cfg:  config{ExportDataRows: 10},
 			want: "-export-data-rows requires -export-data",
 		},
+		{
+			name: "report markdown with plan",
+			cfg:  config{Plan: true, ReportMDFile: "copy-report.md"},
+			want: "-report-md cannot be combined with -plan",
+		},
+		{
+			name: "report markdown with ddl export",
+			cfg:  config{ExportDDLFile: "schema.sql", ReportMDFile: "copy-report.md"},
+			want: "-report-md cannot be combined with -export-ddl",
+		},
+		{
+			name: "report markdown with data export",
+			cfg:  config{ExportDataFile: "seed.sql", ReportMDFile: "copy-report.md"},
+			want: "-report-md cannot be combined with -export-data",
+		},
 	}
 
 	for _, tc := range tests {
@@ -79,6 +94,9 @@ func TestConfigValidateExportDataRows(t *testing.T) {
 
 	if err := (config{ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
 		t.Fatalf("expected export-data row limit to validate, got %v", err)
+	}
+	if err := (config{ReportMDFile: "copy-report.md"}).validate(); err != nil {
+		t.Fatalf("expected report markdown config to validate, got %v", err)
 	}
 }
 

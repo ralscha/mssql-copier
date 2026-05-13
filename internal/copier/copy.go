@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	mssql "github.com/denisenkom/go-mssqldb"
 )
@@ -235,7 +236,8 @@ func (c *copier) copyTableData(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return
 				}
-				if err := c.copySingleTable(ctx, table); err != nil {
+				rowsCopied, err := c.copySingleTable(ctx, table)
+				if err != nil {
 					select {
 					case errCh <- err:
 					default:
@@ -244,7 +246,7 @@ func (c *copier) copyTableData(ctx context.Context) error {
 					return
 				}
 				n := completed.Add(1)
-				log.Printf("copied %s (%d/%d)", table.FQTN(), n, len(c.tables))
+				log.Printf("copied %s rows=%d (%d/%d)", table.FQTN(), rowsCopied, n, len(c.tables))
 			}
 		})
 	}
@@ -268,9 +270,11 @@ dispatch:
 	}
 }
 
-func (c *copier) copySingleTable(ctx context.Context, table tableMeta) error {
+func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, error) {
+	started := time.Now()
 	if len(table.CopyColumns) == 0 {
-		return nil
+		c.report.record(table, 0, time.Since(started))
+		return 0, nil
 	}
 	if c.cfg.Verbose {
 		mode := "bulk"
@@ -282,26 +286,26 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) error {
 
 	sourceConn, err := c.sourceDB.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("source conn %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("source conn %s: %w", table.FQTN(), err)
 	}
 	defer closeAndLog(sourceConn, "source connection")
 
 	targetConn, err := c.targetDB.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("target conn %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("target conn %s: %w", table.FQTN(), err)
 	}
 	defer closeAndLog(targetConn, "target connection")
 
 	query := selectTableCopySQL(table)
 	rows, err := sourceConn.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("query %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("query %s: %w", table.FQTN(), err)
 	}
 	defer closeAndLog(rows, "source rows")
 
 	tx, err := targetConn.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin target tx %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("begin target tx %s: %w", table.FQTN(), err)
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -309,7 +313,7 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) error {
 
 	if table.HasIdentity {
 		if _, err := targetConn.ExecContext(ctx, fmt.Sprintf("SET IDENTITY_INSERT %s ON", table.FQTN())); err != nil {
-			return fmt.Errorf("identity insert on %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("identity insert on %s: %w", table.FQTN(), err)
 		}
 		defer func() {
 			_, _ = targetConn.ExecContext(context.Background(), fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table.FQTN()))
@@ -320,51 +324,54 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) error {
 	if table.BulkOK {
 		stmt, err = tx.PrepareContext(ctx, mssql.CopyIn(table.FQTN(), mssql.BulkOptions{Tablock: true, RowsPerBatch: c.cfg.BatchSize}, columnNames(table.CopyColumns)...))
 		if err != nil {
-			return fmt.Errorf("prepare bulk %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("prepare bulk %s: %w", table.FQTN(), err)
 		}
 	} else {
 		insertSQL := insertTableCopySQL(table)
 		stmt, err = tx.PrepareContext(ctx, insertSQL)
 		if err != nil {
-			return fmt.Errorf("prepare insert %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("prepare insert %s: %w", table.FQTN(), err)
 		}
 	}
 	defer closeAndLog(stmt, "copy statement")
 
 	values := make([]any, len(table.CopyColumns))
 	scanDest := make([]any, len(table.CopyColumns))
+	var rowsCopied int64
 	for i := range values {
 		scanDest[i] = &values[i]
 	}
 
 	for rows.Next() {
 		if err := rows.Scan(scanDest...); err != nil {
-			return fmt.Errorf("scan %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("scan %s: %w", table.FQTN(), err)
 		}
 		params := make([]any, len(table.CopyColumns))
 		for i, col := range table.CopyColumns {
 			params[i], err = c.replaceValue(table, col, values[i])
 			if err != nil {
-				return err
+				return 0, err
 			}
 		}
 		if _, err := stmt.ExecContext(ctx, params...); err != nil {
-			return fmt.Errorf("insert row %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("insert row %s: %w", table.FQTN(), err)
 		}
+		rowsCopied++
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("iterate %s: %w", table.FQTN(), err)
 	}
 
 	if table.BulkOK {
 		if _, err := stmt.ExecContext(ctx); err != nil {
-			return fmt.Errorf("flush bulk %s: %w", table.FQTN(), err)
+			return 0, fmt.Errorf("flush bulk %s: %w", table.FQTN(), err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit %s: %w", table.FQTN(), err)
+		return 0, fmt.Errorf("commit %s: %w", table.FQTN(), err)
 	}
-	return nil
+	c.report.record(table, rowsCopied, time.Since(started))
+	return rowsCopied, nil
 }
 
 func (c *copier) createPostDataObjects(ctx context.Context) error {
