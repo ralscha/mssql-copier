@@ -103,6 +103,40 @@ func TestCopierIntegration(t *testing.T) {
 	}
 }
 
+func TestEnsureTargetDatabaseCreatesMissingDatabase(t *testing.T) {
+	if os.Getenv("COPY_MSSQL_RUN_INTEGRATION") == "" {
+		t.Skip("set COPY_MSSQL_RUN_INTEGRATION=1 to run the integration test")
+	}
+	ctx := context.Background()
+
+	targetContainer, masterDSN := startSQLServerContainer(ctx, t, "copy-mssql-target-create-db")
+	defer terminateContainer(ctx, t, targetContainer)
+
+	databaseName := fmt.Sprintf("TargetDB_%d", time.Now().UnixNano())
+	targetDSN, err := sqlServerDSNWithDatabase(masterDSN, databaseName)
+	if err != nil {
+		t.Fatalf("sqlServerDSNWithDatabase() error = %v", err)
+	}
+
+	if err := ensureTargetDatabase(targetDSN, 2); err != nil {
+		t.Fatalf("ensureTargetDatabase() error = %v", err)
+	}
+
+	targetDB, err := openTestDB(ctx, targetDSN, 2)
+	if err != nil {
+		t.Fatalf("open created target database: %v", err)
+	}
+	defer targetDB.Close()
+
+	var got string
+	if err := targetDB.QueryRowContext(ctx, "SELECT DB_NAME()").Scan(&got); err != nil {
+		t.Fatalf("query current database: %v", err)
+	}
+	if got != databaseName {
+		t.Fatalf("current database = %q, want %q", got, databaseName)
+	}
+}
+
 func TestCopierIntegrationViews(t *testing.T) {
 	if os.Getenv("COPY_MSSQL_RUN_INTEGRATION") == "" {
 		t.Skip("set COPY_MSSQL_RUN_INTEGRATION=1 to run the integration test")

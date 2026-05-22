@@ -10,19 +10,30 @@ import (
 )
 
 type persistedYAMLConfig struct {
-	SourceDSN      string            `yaml:"source,omitempty"`
-	TargetDSN      string            `yaml:"target,omitempty"`
-	Workers        int               `yaml:"workers,omitempty"`
-	BatchSize      int               `yaml:"batch-size,omitempty"`
-	Verbose        bool              `yaml:"verbose,omitempty"`
-	Plan           bool              `yaml:"plan,omitempty"`
-	DropExisting   bool              `yaml:"drop-existing,omitempty"`
-	IncludeSchemas []string          `yaml:"include-schemas,omitempty"`
-	ExcludeSchemas []string          `yaml:"exclude-schemas,omitempty"`
-	IncludeTables  []string          `yaml:"include-tables,omitempty"`
-	ExcludeTables  []string          `yaml:"exclude-tables,omitempty"`
-	FakeData       map[string]string `yaml:"fake-data,omitempty"`
-	LLM            *yamlLLMConfig    `yaml:"llm,omitempty"`
+	SourceDSN      string                 `yaml:"source,omitempty"`
+	TargetDSN      string                 `yaml:"target,omitempty"`
+	ReportMDFile   string                 `yaml:"report-md,omitempty"`
+	Workers        int                    `yaml:"workers,omitempty"`
+	BatchSize      int                    `yaml:"batch-size,omitempty"`
+	Verbose        bool                   `yaml:"verbose,omitempty"`
+	Plan           bool                   `yaml:"plan,omitempty"`
+	DropExisting   bool                   `yaml:"drop-existing,omitempty"`
+	IncludeSchemas []string               `yaml:"include-schemas,omitempty"`
+	ExcludeSchemas []string               `yaml:"exclude-schemas,omitempty"`
+	IncludeTables  []string               `yaml:"include-tables,omitempty"`
+	ExcludeTables  []string               `yaml:"exclude-tables,omitempty"`
+	LLM            *yamlLLMConfig         `yaml:"llm,omitempty"`
+	Docker         *persistedDockerConfig `yaml:"docker,omitempty"`
+	ExportDDLFile  string                 `yaml:"export-ddl,omitempty"`
+	ExportDataFile string                 `yaml:"export-data,omitempty"`
+	ExportDataRows int                    `yaml:"export-data-rows,omitempty"`
+}
+
+type persistedDockerConfig struct {
+	Persistent bool   `yaml:"persistent,omitempty"`
+	ComposeDir string `yaml:"compose-dir,omitempty"`
+	Port       int    `yaml:"port,omitempty"`
+	SAPassword string `yaml:"sa-password,omitempty"`
 }
 
 func writePersistedConfig(path string, cfg config) error {
@@ -45,6 +56,7 @@ func persistedConfigFromConfig(cfg config) persistedYAMLConfig {
 	return persistedYAMLConfig{
 		SourceDSN:      strings.TrimSpace(cfg.SourceDSN),
 		TargetDSN:      strings.TrimSpace(cfg.TargetDSN),
+		ReportMDFile:   strings.TrimSpace(cfg.ReportMDFile),
 		Workers:        max(1, cfg.Workers),
 		BatchSize:      max(1, cfg.BatchSize),
 		Verbose:        cfg.Verbose,
@@ -54,8 +66,23 @@ func persistedConfigFromConfig(cfg config) persistedYAMLConfig {
 		ExcludeSchemas: append([]string(nil), cfg.ExcludeSchemas...),
 		IncludeTables:  append([]string(nil), cfg.IncludeTables...),
 		ExcludeTables:  append([]string(nil), cfg.ExcludeTables...),
-		FakeData:       cloneStringMap(cfg.FakeData),
 		LLM:            persistedLLMConfig(cfg.LLM),
+		Docker:         persistedDockerConfigFrom(cfg.Docker),
+		ExportDDLFile:  strings.TrimSpace(cfg.ExportDDLFile),
+		ExportDataFile: strings.TrimSpace(cfg.ExportDataFile),
+		ExportDataRows: max(0, cfg.ExportDataRows),
+	}
+}
+
+func persistedDockerConfigFrom(cfg dockerTargetConfig) *persistedDockerConfig {
+	if !cfg.Enabled {
+		return nil
+	}
+	return &persistedDockerConfig{
+		Persistent: cfg.Persistent,
+		ComposeDir: cfg.ComposeDir,
+		Port:       cfg.Port,
+		SAPassword: cfg.SAPassword,
 	}
 }
 

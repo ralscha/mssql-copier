@@ -1,11 +1,5 @@
 version: 3
 
-vars:
-  GOMODCACHE:
-    sh: go env GOMODCACHE
-  GOCACHE:
-    sh: go env GOCACHE
-
 tasks:
   default:
     desc: Show available tasks
@@ -27,8 +21,7 @@ tasks:
   lint:
     desc: Run golangci-lint in a Docker container
     cmds:
-      - go mod download
-      - docker run --rm -e GOMODCACHE=/go/pkg/mod -e GOCACHE=/root/.cache/go-build -v {{toSlash .ROOT_DIR}}:/app -v {{toSlash .GOMODCACHE}}:/go/pkg/mod -v {{toSlash .GOCACHE}}:/root/.cache/go-build -w /app golangci/golangci-lint:v2.12.2 golangci-lint run -v --timeout 5m
+      - docker run --rm -v {{toSlash .ROOT_DIR}}:/app -w /app golangci/golangci-lint:v2.12.2 golangci-lint run -v --timeout 5m
 
   test:
     desc: Run all tests
@@ -52,20 +45,52 @@ tasks:
       COPY_MSSQL_RUN_INTEGRATION: '1'
 
   plan:
-    desc: Print the execution plan without modifying the target
+    desc: Launch the app with a config that preselects plan mode in the TUI
     deps: [build]
+    summary: |
+      Open the TUI using a YAML config file that already has `plan: true`
+      plus any source/filter settings you want to inspect.
     cmds:
-      - go run ./cmd/mssql-copier -plan -source "{{.SOURCE_DSN}}" {{if .TARGET_DSN}}-target "{{.TARGET_DSN}}"{{end}} {{if .INCLUDE_SCHEMAS}}-include-schemas "{{.INCLUDE_SCHEMAS}}"{{end}} {{if .EXCLUDE_SCHEMAS}}-exclude-schemas "{{.EXCLUDE_SCHEMAS}}"{{end}} {{if .INCLUDE_TABLES}}-include-tables "{{.INCLUDE_TABLES}}"{{end}} {{if .EXCLUDE_TABLES}}-exclude-tables "{{.EXCLUDE_TABLES}}"{{end}} {{if .DROP_EXISTING}}-drop-existing{{end}}
+      - go run ./cmd/mssql-copier --config "{{.CONFIG}}"
     requires:
-      vars: [SOURCE_DSN]
+      vars: [CONFIG]
 
   run:
-    desc: Run the copier
+    desc: Launch the TUI
     deps: [build]
+    summary: |
+      Open the TUI, optionally preloading values from a YAML config file.
+
+      Examples:
+        task run
+        task run CONFIG=./mssql-copier.yml
     cmds:
-      - go run ./cmd/mssql-copier -source "{{.SOURCE_DSN}}" -target "{{.TARGET_DSN}}" {{if .INCLUDE_SCHEMAS}}-include-schemas "{{.INCLUDE_SCHEMAS}}"{{end}} {{if .EXCLUDE_SCHEMAS}}-exclude-schemas "{{.EXCLUDE_SCHEMAS}}"{{end}} {{if .INCLUDE_TABLES}}-include-tables "{{.INCLUDE_TABLES}}"{{end}} {{if .EXCLUDE_TABLES}}-exclude-tables "{{.EXCLUDE_TABLES}}"{{end}} {{if .DROP_EXISTING}}-drop-existing{{end}} {{if .WORKERS}}-workers {{.WORKERS}}{{end}} {{if .BATCH_SIZE}}-batch-size {{.BATCH_SIZE}}{{end}}
-    requires:
-      vars: [SOURCE_DSN, TARGET_DSN]
+      - go run ./cmd/mssql-copier {{if .CONFIG}}--config "{{.CONFIG}}"{{end}}
+
+  tui:
+    desc: Launch the TUI
+    cmds:
+      - task: run
+        vars:
+          CONFIG: '{{.CONFIG}}'
+
+  dev:db:up:
+    desc: Start the development SQL Server with Northwind sample data
+    dir: docker/dev
+    cmds:
+      - docker compose up -d
+
+  dev:db:down:
+    desc: Stop the development SQL Server (data volume is preserved)
+    dir: docker/dev
+    cmds:
+      - docker compose down
+
+  dev:db:reset:
+    desc: Stop the development SQL Server and delete all data
+    dir: docker/dev
+    cmds:
+      - docker compose down --volumes
 
   clean:
     desc: Remove the built executable if present

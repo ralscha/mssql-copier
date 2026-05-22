@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestBuildLiquibaseInitialSQL(t *testing.T) {
+func TestBuildFlywayBaselineSQL(t *testing.T) {
 	c := &copier{
 		cfg: config{ExportDDLFile: "baseline.sql"},
 		aliasTypes: []aliasTypeMeta{{
@@ -78,14 +78,13 @@ func TestBuildLiquibaseInitialSQL(t *testing.T) {
 		}},
 	}
 
-	got, err := c.buildLiquibaseInitialSQL()
+	got, err := c.buildFlywayBaselineSQL()
 	if err != nil {
-		t.Fatalf("buildLiquibaseInitialSQL() unexpected error: %v", err)
+		t.Fatalf("buildFlywayBaselineSQL() unexpected error: %v", err)
 	}
 
 	wants := []string{
-		"--liquibase formatted sql",
-		"--changeset mssql-copier:schema-sales splitStatements:false",
+		"IF SCHEMA_ID(N'sales') IS NULL EXEC(N'CREATE SCHEMA [sales]');",
 		"CREATE TYPE [sales].[order_code] FROM nvarchar(12) NOT NULL;",
 		"CREATE TABLE [sales].[customers]",
 		"CREATE TABLE [sales].[orders]",
@@ -99,8 +98,12 @@ func TestBuildLiquibaseInitialSQL(t *testing.T) {
 	}
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
-			t.Fatalf("expected %q in Liquibase SQL:\n%s", want, got)
+			t.Fatalf("expected %q in Flyway SQL:\n%s", want, got)
 		}
+	}
+
+	if strings.Contains(got, "formatted sql") || strings.Contains(got, "--changeset ") {
+		t.Fatalf("expected plain DDL export without migration-tool markers, got:\n%s", got)
 	}
 
 	if strings.Contains(got, "FK_orders_external") {
@@ -115,7 +118,7 @@ func TestBuildLiquibaseInitialSQL(t *testing.T) {
 			t.Fatalf("missing order markers %q or %q", first, second)
 		}
 		if firstIdx >= secondIdx {
-			t.Fatalf("expected %q before %q in Liquibase SQL", first, second)
+			t.Fatalf("expected %q before %q in Flyway SQL", first, second)
 		}
 	}
 

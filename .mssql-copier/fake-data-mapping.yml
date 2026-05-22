@@ -1,0 +1,319 @@
+sources:
+    server=localhost;port=1433;database=Northwind:
+        - selector: dbo.categories.categoryid
+          display: '[dbo].[Categories].[CategoryID]'
+          type-name: int
+        - selector: dbo.categories.categoryname
+          display: '[dbo].[Categories].[CategoryName]'
+          type-name: nvarchar
+        - selector: dbo.categories.description
+          display: '[dbo].[Categories].[Description]'
+          type-name: nvarchar
+        - selector: dbo.customers.address
+          display: '[dbo].[Customers].[Address]'
+          type-name: nvarchar
+          function-name: street
+          function-display: Street
+        - selector: dbo.customers.city
+          display: '[dbo].[Customers].[City]'
+          type-name: nvarchar
+          function-name: city
+          function-display: City
+        - selector: dbo.customers.companyname
+          display: '[dbo].[Customers].[CompanyName]'
+          type-name: nvarchar
+          function-name: company
+          function-display: Company
+        - selector: dbo.customers.contactname
+          display: '[dbo].[Customers].[ContactName]'
+          type-name: nvarchar
+          function-name: name
+          function-display: Name
+        - selector: dbo.customers.contacttitle
+          display: '[dbo].[Customers].[ContactTitle]'
+          type-name: nvarchar
+          function-name: jobtitle
+          function-display: Job Title
+        - selector: dbo.customers.country
+          display: '[dbo].[Customers].[Country]'
+          type-name: nvarchar
+          function-name: country
+          function-display: Country
+        - selector: dbo.customers.customerid
+          display: '[dbo].[Customers].[CustomerID]'
+          type-name: nchar
+        - selector: dbo.customers.fax
+          display: '[dbo].[Customers].[Fax]'
+          type-name: nvarchar
+        - selector: dbo.customers.phone
+          display: '[dbo].[Customers].[Phone]'
+          type-name: nvarchar
+        - selector: dbo.customers.postalcode
+          display: '[dbo].[Customers].[PostalCode]'
+          type-name: nvarchar
+          function-name: zip
+          function-display: Zip
+        - selector: dbo.customers.region
+          display: '[dbo].[Customers].[Region]'
+          type-name: nvarchar
+          function-name: state
+          function-display: State
+        - selector: dbo.employees.address
+          display: '[dbo].[Employees].[Address]'
+          type-name: nvarchar
+          function-name: street
+          function-display: Street
+        - selector: dbo.employees.birthdate
+          display: '[dbo].[Employees].[BirthDate]'
+          type-name: datetime
+          function-name: date
+          function-display: Date
+        - selector: dbo.employees.city
+          display: '[dbo].[Employees].[City]'
+          type-name: nvarchar
+          function-name: city
+          function-display: City
+        - selector: dbo.employees.country
+          display: '[dbo].[Employees].[Country]'
+          type-name: nvarchar
+          function-name: country
+          function-display: Country
+        - selector: dbo.employees.employeeid
+          display: '[dbo].[Employees].[EmployeeID]'
+          type-name: int
+        - selector: dbo.employees.firstname
+          display: '[dbo].[Employees].[FirstName]'
+          type-name: nvarchar
+          function-name: firstname
+          function-display: First Name
+        - selector: dbo.employees.hiredate
+          display: '[dbo].[Employees].[HireDate]'
+          type-name: datetime
+          function-name: date
+          function-display: Date
+        - selector: dbo.employees.homephone
+          display: '[dbo].[Employees].[HomePhone]'
+          type-name: nvarchar
+        - selector: dbo.employees.lastname
+          display: '[dbo].[Employees].[LastName]'
+          type-name: nvarchar
+          function-name: lastname
+          function-display: Last Name
+        - selector: dbo.employees.postalcode
+          display: '[dbo].[Employees].[PostalCode]'
+          type-name: nvarchar
+          function-name: zip
+          function-display: Zip
+        - selector: dbo.employees.region
+          display: '[dbo].[Employees].[Region]'
+          type-name: nvarchar
+          function-name: state
+          function-display: State
+        - selector: dbo.employees.reportsto
+          display: '[dbo].[Employees].[ReportsTo]'
+          type-name: int
+        - selector: dbo.employees.title
+          display: '[dbo].[Employees].[Title]'
+          type-name: nvarchar
+        - selector: dbo.employees.titleofcourtesy
+          display: '[dbo].[Employees].[TitleOfCourtesy]'
+          type-name: nvarchar
+        - selector: dbo.orderdetails.discount
+          display: '[dbo].[OrderDetails].[Discount]'
+          type-name: real
+        - selector: dbo.orderdetails.orderid
+          display: '[dbo].[OrderDetails].[OrderID]'
+          type-name: int
+        - selector: dbo.orderdetails.productid
+          display: '[dbo].[OrderDetails].[ProductID]'
+          type-name: int
+        - selector: dbo.orderdetails.quantity
+          display: '[dbo].[OrderDetails].[Quantity]'
+          type-name: smallint
+        - selector: dbo.orderdetails.unitprice
+          display: '[dbo].[OrderDetails].[UnitPrice]'
+          type-name: money
+        - selector: dbo.orders.customerid
+          display: '[dbo].[Orders].[CustomerID]'
+          type-name: nchar
+        - selector: dbo.orders.employeeid
+          display: '[dbo].[Orders].[EmployeeID]'
+          type-name: int
+        - selector: dbo.orders.freight
+          display: '[dbo].[Orders].[Freight]'
+          type-name: money
+        - selector: dbo.orders.orderdate
+          display: '[dbo].[Orders].[OrderDate]'
+          type-name: datetime
+          function-name: date
+          function-display: Date
+        - selector: dbo.orders.orderid
+          display: '[dbo].[Orders].[OrderID]'
+          type-name: int
+        - selector: dbo.orders.requireddate
+          display: '[dbo].[Orders].[RequiredDate]'
+          type-name: datetime
+          function-name: date
+          function-display: Date
+        - selector: dbo.orders.shipaddress
+          display: '[dbo].[Orders].[ShipAddress]'
+          type-name: nvarchar
+          function-name: street
+          function-display: Street
+        - selector: dbo.orders.shipcity
+          display: '[dbo].[Orders].[ShipCity]'
+          type-name: nvarchar
+          function-name: city
+          function-display: City
+        - selector: dbo.orders.shipcountry
+          display: '[dbo].[Orders].[ShipCountry]'
+          type-name: nvarchar
+          function-name: country
+          function-display: Country
+        - selector: dbo.orders.shipname
+          display: '[dbo].[Orders].[ShipName]'
+          type-name: nvarchar
+          function-name: name
+          function-display: Name
+        - selector: dbo.orders.shippeddate
+          display: '[dbo].[Orders].[ShippedDate]'
+          type-name: datetime
+          function-name: date
+          function-display: Date
+        - selector: dbo.orders.shippostalcode
+          display: '[dbo].[Orders].[ShipPostalCode]'
+          type-name: nvarchar
+          function-name: zip
+          function-display: Zip
+        - selector: dbo.orders.shipregion
+          display: '[dbo].[Orders].[ShipRegion]'
+          type-name: nvarchar
+          function-name: state
+          function-display: State
+        - selector: dbo.orders.shipvia
+          display: '[dbo].[Orders].[ShipVia]'
+          type-name: int
+        - selector: dbo.products.categoryid
+          display: '[dbo].[Products].[CategoryID]'
+          type-name: int
+        - selector: dbo.products.discontinued
+          display: '[dbo].[Products].[Discontinued]'
+          type-name: bit
+        - selector: dbo.products.productid
+          display: '[dbo].[Products].[ProductID]'
+          type-name: int
+        - selector: dbo.products.productname
+          display: '[dbo].[Products].[ProductName]'
+          type-name: nvarchar
+        - selector: dbo.products.quantityperunit
+          display: '[dbo].[Products].[QuantityPerUnit]'
+          type-name: nvarchar
+        - selector: dbo.products.reorderlevel
+          display: '[dbo].[Products].[ReorderLevel]'
+          type-name: smallint
+        - selector: dbo.products.supplierid
+          display: '[dbo].[Products].[SupplierID]'
+          type-name: int
+        - selector: dbo.products.unitprice
+          display: '[dbo].[Products].[UnitPrice]'
+          type-name: money
+        - selector: dbo.products.unitsinstock
+          display: '[dbo].[Products].[UnitsInStock]'
+          type-name: smallint
+        - selector: dbo.products.unitsonorder
+          display: '[dbo].[Products].[UnitsOnOrder]'
+          type-name: smallint
+        - selector: dbo.shippers.companyname
+          display: '[dbo].[Shippers].[CompanyName]'
+          type-name: nvarchar
+        - selector: dbo.shippers.phone
+          display: '[dbo].[Shippers].[Phone]'
+          type-name: nvarchar
+        - selector: dbo.shippers.shipperid
+          display: '[dbo].[Shippers].[ShipperID]'
+          type-name: int
+        - selector: dbo.suppliers.address
+          display: '[dbo].[Suppliers].[Address]'
+          type-name: nvarchar
+          function-name: street
+          function-display: Street
+        - selector: dbo.suppliers.city
+          display: '[dbo].[Suppliers].[City]'
+          type-name: nvarchar
+          function-name: city
+          function-display: City
+        - selector: dbo.suppliers.companyname
+          display: '[dbo].[Suppliers].[CompanyName]'
+          type-name: nvarchar
+          function-name: company
+          function-display: Company
+        - selector: dbo.suppliers.contactname
+          display: '[dbo].[Suppliers].[ContactName]'
+          type-name: nvarchar
+          function-name: name
+          function-display: Name
+        - selector: dbo.suppliers.contacttitle
+          display: '[dbo].[Suppliers].[ContactTitle]'
+          type-name: nvarchar
+          function-name: jobtitle
+          function-display: Job Title
+        - selector: dbo.suppliers.country
+          display: '[dbo].[Suppliers].[Country]'
+          type-name: nvarchar
+          function-name: country
+          function-display: Country
+        - selector: dbo.suppliers.fax
+          display: '[dbo].[Suppliers].[Fax]'
+          type-name: nvarchar
+        - selector: dbo.suppliers.phone
+          display: '[dbo].[Suppliers].[Phone]'
+          type-name: nvarchar
+        - selector: dbo.suppliers.postalcode
+          display: '[dbo].[Suppliers].[PostalCode]'
+          type-name: nvarchar
+          function-name: zip
+          function-display: Zip
+        - selector: dbo.suppliers.region
+          display: '[dbo].[Suppliers].[Region]'
+          type-name: nvarchar
+          function-name: state
+          function-display: State
+        - selector: dbo.suppliers.supplierid
+          display: '[dbo].[Suppliers].[SupplierID]'
+          type-name: int
+mappings:
+    server=localhost;port=1433;database=Northwind:
+        dbo.customers.address: street
+        dbo.customers.city: city
+        dbo.customers.companyname: company
+        dbo.customers.contactname: name
+        dbo.customers.contacttitle: jobtitle
+        dbo.customers.country: country
+        dbo.customers.postalcode: zip
+        dbo.customers.region: state
+        dbo.employees.address: street
+        dbo.employees.birthdate: date
+        dbo.employees.city: city
+        dbo.employees.country: country
+        dbo.employees.firstname: firstname
+        dbo.employees.hiredate: date
+        dbo.employees.lastname: lastname
+        dbo.employees.postalcode: zip
+        dbo.employees.region: state
+        dbo.orders.orderdate: date
+        dbo.orders.requireddate: date
+        dbo.orders.shipaddress: street
+        dbo.orders.shipcity: city
+        dbo.orders.shipcountry: country
+        dbo.orders.shipname: name
+        dbo.orders.shippeddate: date
+        dbo.orders.shippostalcode: zip
+        dbo.orders.shipregion: state
+        dbo.suppliers.address: street
+        dbo.suppliers.city: city
+        dbo.suppliers.companyname: company
+        dbo.suppliers.contactname: name
+        dbo.suppliers.contacttitle: jobtitle
+        dbo.suppliers.country: country
+        dbo.suppliers.postalcode: zip
+        dbo.suppliers.region: state

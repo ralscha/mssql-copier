@@ -8,15 +8,12 @@ import (
 	"strings"
 )
 
-const liquibaseAuthor = "mssql-copier"
-
-type liquibaseChange struct {
-	id  string
+type flywayStatement struct {
 	sql string
 }
 
-func (c *copier) writeLiquibaseInitialQueryFile() error {
-	script, err := c.buildLiquibaseInitialSQL()
+func (c *copier) writeFlywayBaselineFile() error {
+	script, err := c.buildFlywayBaselineSQL()
 	if err != nil {
 		return err
 	}
@@ -24,44 +21,39 @@ func (c *copier) writeLiquibaseInitialQueryFile() error {
 	dir := filepath.Dir(c.cfg.ExportDDLFile)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return fmt.Errorf("create liquibase output directory: %w", err)
+			return fmt.Errorf("create flyway output directory: %w", err)
 		}
 	}
 
 	if err := os.WriteFile(c.cfg.ExportDDLFile, []byte(script), 0o600); err != nil {
-		return fmt.Errorf("write liquibase initial query file: %w", err)
+		return fmt.Errorf("write flyway baseline file: %w", err)
 	}
 	return nil
 }
 
-func (c *copier) buildLiquibaseInitialSQL() (string, error) {
-	changes, err := c.liquibaseChanges()
+func (c *copier) buildFlywayBaselineSQL() (string, error) {
+	statements, err := c.flywayStatements()
 	if err != nil {
 		return "", err
 	}
 
 	var builder strings.Builder
-	builder.WriteString("--liquibase formatted sql\n")
-	for _, change := range changes {
-		builder.WriteString("\n")
-		builder.WriteString("--changeset ")
-		builder.WriteString(liquibaseAuthor)
-		builder.WriteString(":")
-		builder.WriteString(change.id)
-		builder.WriteString(" splitStatements:false\n")
-		builder.WriteString(strings.TrimSpace(change.sql))
+	for index, statement := range statements {
+		if index > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(strings.TrimSpace(statement.sql))
 		builder.WriteString("\n")
 	}
 	return builder.String(), nil
 }
 
-func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
-	var changes []liquibaseChange
+func (c *copier) flywayStatements() ([]flywayStatement, error) {
+	var statements []flywayStatement
 
 	for _, schema := range c.exportSchemaNames() {
-		changes = append(changes, liquibaseChange{
-			id:  "schema-" + liquibaseIDPart(schema),
-			sql: fmt.Sprintf(`IF SCHEMA_ID(N'%s') IS NULL EXEC(N'CREATE SCHEMA %s')`, escapeSQLString(schema), quoteIdent(schema)),
+		statements = append(statements, flywayStatement{
+			sql: fmt.Sprintf(`IF SCHEMA_ID(N'%s') IS NULL EXEC(N'CREATE SCHEMA %s');`, escapeSQLString(schema), quoteIdent(schema)),
 		})
 	}
 
@@ -70,8 +62,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		if err != nil {
 			return nil, err
 		}
-		changes = append(changes, liquibaseChange{
-			id:  "alias-type-" + liquibaseIDPart(aliasType.Schema) + "-" + liquibaseIDPart(aliasType.Name),
+		statements = append(statements, flywayStatement{
 			sql: sqlText,
 		})
 	}
@@ -81,8 +72,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		if err != nil {
 			return nil, err
 		}
-		changes = append(changes, liquibaseChange{
-			id:  "table-type-" + liquibaseIDPart(tableType.Schema) + "-" + liquibaseIDPart(tableType.Name),
+		statements = append(statements, flywayStatement{
 			sql: sqlText,
 		})
 	}
@@ -92,8 +82,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		if err != nil {
 			return nil, err
 		}
-		changes = append(changes, liquibaseChange{
-			id:  "sequence-" + liquibaseIDPart(sequence.Schema) + "-" + liquibaseIDPart(sequence.Name),
+		statements = append(statements, flywayStatement{
 			sql: sqlText,
 		})
 	}
@@ -103,8 +92,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		if err != nil {
 			return nil, err
 		}
-		changes = append(changes, liquibaseChange{
-			id:  "table-" + liquibaseIDPart(table.Schema) + "-" + liquibaseIDPart(table.Name),
+		statements = append(statements, flywayStatement{
 			sql: sqlText,
 		})
 	}
@@ -112,8 +100,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 	selectedTables := selectedTableSet(c.tables)
 	for _, table := range c.tables {
 		if table.PrimaryKey != nil {
-			changes = append(changes, liquibaseChange{
-				id:  "primary-key-" + liquibaseIDPart(table.Schema) + "-" + liquibaseIDPart(table.Name),
+			statements = append(statements, flywayStatement{
 				sql: table.PrimaryKeySQL(),
 			})
 		}
@@ -122,14 +109,12 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 			if check.Disabled {
 				sqlText += "\n" + fmt.Sprintf("ALTER TABLE %s NOCHECK CONSTRAINT %s;", table.FQTN(), quoteIdent(check.Name))
 			}
-			changes = append(changes, liquibaseChange{
-				id:  "check-" + liquibaseIDPart(table.Schema) + "-" + liquibaseIDPart(table.Name) + "-" + liquibaseIDPart(check.Name),
+			statements = append(statements, flywayStatement{
 				sql: sqlText,
 			})
 		}
 		for _, index := range table.Indexes {
-			changes = append(changes, liquibaseChange{
-				id:  "index-" + liquibaseIDPart(table.Schema) + "-" + liquibaseIDPart(table.Name) + "-" + liquibaseIDPart(index.Name),
+			statements = append(statements, flywayStatement{
 				sql: table.IndexSQL(index),
 			})
 		}
@@ -141,8 +126,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 			if fk.Disabled {
 				sqlText += "\n" + fmt.Sprintf("ALTER TABLE %s NOCHECK CONSTRAINT %s;", table.FQTN(), quoteIdent(fk.Name))
 			}
-			changes = append(changes, liquibaseChange{
-				id:  "foreign-key-" + liquibaseIDPart(table.Schema) + "-" + liquibaseIDPart(table.Name) + "-" + liquibaseIDPart(fk.Name),
+			statements = append(statements, flywayStatement{
 				sql: sqlText,
 			})
 		}
@@ -153,8 +137,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		return nil, fmt.Errorf("view dependency resolution: %w", err)
 	}
 	for _, view := range orderedViews {
-		changes = append(changes, liquibaseChange{
-			id:  "view-" + liquibaseIDPart(view.Schema) + "-" + liquibaseIDPart(view.Name),
+		statements = append(statements, flywayStatement{
 			sql: view.CreateViewSQL(),
 		})
 	}
@@ -164,15 +147,13 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		return nil, fmt.Errorf("function dependency resolution: %w", err)
 	}
 	for _, function := range orderedFunctions {
-		changes = append(changes, liquibaseChange{
-			id:  "function-" + liquibaseIDPart(function.Schema) + "-" + liquibaseIDPart(function.Name),
+		statements = append(statements, flywayStatement{
 			sql: function.CreateFunctionSQL(),
 		})
 	}
 
 	for _, synonym := range c.synonyms {
-		changes = append(changes, liquibaseChange{
-			id:  "synonym-" + liquibaseIDPart(synonym.Schema) + "-" + liquibaseIDPart(synonym.Name),
+		statements = append(statements, flywayStatement{
 			sql: synonym.CreateSynonymSQL(),
 		})
 	}
@@ -182,8 +163,7 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		return nil, fmt.Errorf("procedure dependency resolution: %w", err)
 	}
 	for _, procedure := range orderedProcedures {
-		changes = append(changes, liquibaseChange{
-			id:  "procedure-" + liquibaseIDPart(procedure.Schema) + "-" + liquibaseIDPart(procedure.Name),
+		statements = append(statements, flywayStatement{
 			sql: procedure.CreateProcedureSQL(),
 		})
 	}
@@ -199,13 +179,12 @@ func (c *copier) liquibaseChanges() ([]liquibaseChange, error) {
 		} else {
 			sqlText += "\n" + fmt.Sprintf("ENABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
 		}
-		changes = append(changes, liquibaseChange{
-			id:  "trigger-" + liquibaseIDPart(trigger.Schema) + "-" + liquibaseIDPart(trigger.Name),
+		statements = append(statements, flywayStatement{
 			sql: sqlText,
 		})
 	}
 
-	return changes, nil
+	return statements, nil
 }
 
 func (c *copier) exportSchemaNames() []string {
@@ -255,15 +234,4 @@ func selectedTableSet(tables []tableMeta) map[string]struct{} {
 		selected[strings.ToLower(table.FQTN())] = struct{}{}
 	}
 	return selected
-}
-
-func liquibaseIDPart(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	replacer := strings.NewReplacer(" ", "-", ".", "-", "[", "", "]", "", "/", "-", `\\`, "-", ":", "-", "'", "", `"`, "")
-	value = replacer.Replace(value)
-	value = strings.Trim(value, "-")
-	if value == "" {
-		return "item"
-	}
-	return value
 }

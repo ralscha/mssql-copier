@@ -65,19 +65,35 @@ func (cfg llmConfig) apiKey() string {
 	return strings.TrimSpace(os.Getenv(cfg.APIKeyEnv))
 }
 
-func (cfg llmConfig) isConfigured() bool {
+func (cfg llmConfig) configurationError() error {
+	if cfg.Provider == "" {
+		return fmt.Errorf("llm auto-select is not configured: missing llm.provider")
+	}
 	if cfg.Provider != "openai" {
-		return false
+		return fmt.Errorf("llm auto-select is not configured: unsupported llm.provider %q", cfg.Provider)
 	}
 	if cfg.Model == "" {
-		return false
+		return fmt.Errorf("llm auto-select is not configured: missing llm.model")
 	}
-	return cfg.apiKey() != ""
+	if cfg.APIKey != "" {
+		return nil
+	}
+	if cfg.APIKeyEnv == "" {
+		return fmt.Errorf("llm auto-select is not configured: set llm.api-key or llm.api-key-env")
+	}
+	if strings.TrimSpace(os.Getenv(cfg.APIKeyEnv)) == "" {
+		return fmt.Errorf("llm auto-select is not configured: environment variable %q is empty; use llm.api-key-env for an environment variable name or llm.api-key for a literal key", cfg.APIKeyEnv)
+	}
+	return nil
+}
+
+func (cfg llmConfig) isConfigured() bool {
+	return cfg.configurationError() == nil
 }
 
 func autoSelectFakeDataWithLLM(ctx context.Context, llm llmConfig, entries []tuiFakeDataEntry, options []fakeFunctionOption) (map[string]string, error) {
-	if !llm.isConfigured() {
-		return nil, fmt.Errorf("llm auto-select is not configured")
+	if err := llm.configurationError(); err != nil {
+		return nil, err
 	}
 
 	allowed := preferredSensitiveFakeFunctions(options)

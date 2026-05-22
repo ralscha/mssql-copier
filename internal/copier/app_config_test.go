@@ -30,20 +30,33 @@ func TestLoadYAMLConfigMissingExplicit(t *testing.T) {
 	}
 }
 
-func TestLoadYAMLConfigRejectsExportFlags(t *testing.T) {
+func TestLoadYAMLConfigAcceptsExportSettings(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "cfg.yml")
-	content := "source: sqlserver://src\nexport-ddl: out.sql\n"
+	content := strings.Join([]string{
+		"source: sqlserver://src",
+		"report-md: copy-report.md",
+		"export-ddl: out.sql",
+		"export-data: seed.sql",
+		"export-data-rows: 25",
+		"",
+	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, _, err := loadYAMLConfig(path, true)
-	if err == nil {
-		t.Fatal("expected error when export-ddl is configured in YAML")
+	yamlCfg, loaded, err := loadYAMLConfig(path, true)
+	if err != nil {
+		t.Fatalf("loadYAMLConfig() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "cannot set export-ddl") || !strings.Contains(err.Error(), "--export-ddl") {
-		t.Fatalf("expected export-ddl validation error, got %v", err)
+	if !loaded {
+		t.Fatal("expected loaded config")
+	}
+
+	var got config
+	yamlCfg.applyTo(&got)
+	if got.ReportMDFile != "copy-report.md" || got.ExportDDLFile != "out.sql" || got.ExportDataFile != "seed.sql" || got.ExportDataRows != 25 {
+		t.Fatalf("export settings = %+v", got)
 	}
 }
 
@@ -55,15 +68,18 @@ func TestWritePersistedConfigRoundTrip(t *testing.T) {
 		ConfigPath:     path,
 		SourceDSN:      "sqlserver://source",
 		TargetDSN:      "sqlserver://target",
+		ReportMDFile:   "copy-report.md",
 		Workers:        4,
 		BatchSize:      2500,
 		Verbose:        true,
 		DropExisting:   true,
+		ExportDDLFile:  "./export/schema.sql",
+		ExportDataFile: "./export/data.sql",
+		ExportDataRows: 25,
 		IncludeSchemas: []string{"sales", "dbo"},
 		ExcludeSchemas: []string{"audit"},
 		IncludeTables:  []string{"sales.orders"},
 		ExcludeTables:  []string{"*.audit_%"},
-		FakeData:       map[string]string{"dbo.users.summary": "loremipsumsentence;10"},
 		LLM:            llmConfig{Provider: "openai", Model: "gpt-4o-mini", APIKeyEnv: "OPENAI_API_KEY", BaseURL: "https://api.openai.com/v1"},
 	}
 
@@ -87,14 +103,17 @@ func TestWritePersistedConfigRoundTrip(t *testing.T) {
 	if got.Workers != cfg.Workers || got.BatchSize != cfg.BatchSize || got.DropExisting != cfg.DropExisting || got.Verbose != cfg.Verbose {
 		t.Fatalf("settings round-trip mismatch: got %+v want %+v", got, cfg)
 	}
+	if got.ReportMDFile != cfg.ReportMDFile || got.ExportDDLFile != cfg.ExportDDLFile || got.ExportDataFile != cfg.ExportDataFile || got.ExportDataRows != cfg.ExportDataRows {
+		t.Fatalf("export settings round-trip mismatch: got %+v want %+v", got, cfg)
+	}
 	if len(got.IncludeSchemas) != 2 || got.IncludeSchemas[0] != "sales" || got.IncludeSchemas[1] != "dbo" {
 		t.Fatalf("include-schemas round-trip = %#v", got.IncludeSchemas)
 	}
 	if len(got.ExcludeTables) != 1 || got.ExcludeTables[0] != "*.audit_%" {
 		t.Fatalf("exclude-tables round-trip = %#v", got.ExcludeTables)
 	}
-	if got.FakeData["dbo.users.summary"] != "loremipsumsentence;10" {
-		t.Fatalf("fake-data round-trip = %#v", got.FakeData)
+	if got.FakeData != nil {
+		t.Fatalf("fake-data should not be exported to YAML, got %#v", got.FakeData)
 	}
 	if got.LLM.Provider != "openai" || got.LLM.Model != "gpt-4o-mini" || got.LLM.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Fatalf("llm round-trip = %#v", got.LLM)

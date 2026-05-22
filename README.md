@@ -18,7 +18,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Stored procedure copy** — copies stored procedures with rerun-safe `CREATE OR ALTER PROCEDURE`
 - **Synonym copy** — copies synonyms with rerun-safe drop-and-create behavior
 - **Plan mode** — preview the execution plan without modifying the target
-- **Liquibase export mode** — writes an initial Liquibase formatted SQL file for the discovered schema objects
+- **Flyway export mode** — writes an initial Flyway-ready SQL baseline file for the discovered schema objects
 - **Markdown copy report** — writes a post-run markdown summary with per-table copied row counts and run highlights
 - **Drop-existing mode** — optionally drop matching target tables before recreating them
 - **Fake data replacement** — replace configured column values during copy and data export using `gofakeit`
@@ -41,74 +41,51 @@ go build -o mssql-copier ./cmd/mssql-copier
 ## Project layout
 
 ```text
-cmd/mssql-copier/   CLI entrypoint
+cmd/mssql-copier/   binary entrypoint
 internal/copier/    copier engine, SQL metadata logic, and tests
 ```
 
 ## Usage
 
-### Basic copy
+Launch the application with:
 
 ```sh
-mssql-copier \
-  --source "sqlserver://user:pass@source-host:1433?database=SourceDB" \
-  --target "sqlserver://user:pass@target-host:1433?database=TargetDB"
+mssql-copier
 ```
 
-When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the CLI asks for an explicit `yes` before it opens the target connection.
-
-### TUI mode
-
-Launch the interactive terminal UI with:
+To start from a specific YAML file:
 
 ```sh
-mssql-copier --tui
+mssql-copier --config ./config/prod.yml
 ```
 
-The TUI lets you enter source and target DSNs, adjust core copy settings, edit include/exclude schema and table filters, and export the current state back into a YAML config file.
+The application always opens the TUI. The TUI lets you enter source and target SQL Server connection parameters as separate fields such as server, port, database, user, password, encryption settings, and extra driver options. It also lets you adjust filters, report/export paths, Docker target settings, fake-data rules, and export the current state back into a YAML config file.
 
-Inside the fake-data editor, the TUI shows copyable source columns and lets you assign exact `schema.table.column` faker rules from the supported `gofakeit` catalog. Functions with parameters can be configured directly in the TUI using semicolon-separated argument values in declared order. When an `llm` config is present and usable, the editor also exposes an auto-select action that asks the configured model to pre-fill faker choices for likely sensitive columns.
+When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the app asks for an explicit `yes` before it opens the target connection.
+
+If the target DSN names a database that does not exist yet, the copier first connects to `master` on that same SQL Server instance and creates the database automatically before it opens the target connection.
+
+The form supports four run modes: `copy`, `plan`, `ddl`, and `ddl+data`. As you switch modes, the TUI hides fields that are not editable or not used in that mode. For example, target settings and report output are copy-only, `drop-existing` is shown only for `copy` and `plan`, and data export options are shown only in `ddl+data`. When target type is `local`, the TUI only accepts loopback target addresses such as `localhost`, `127.0.0.1`, or `::1`.
+
+Inside the fake-data editor, the TUI shows copyable source columns and lets you assign exact `schema.table.column` faker rules from the supported `gofakeit` catalog. Functions with parameters can be configured directly in the TUI using semicolon-separated argument values in declared order. When an `llm` config is present and usable, the editor also exposes an auto-select action that asks the configured model to pre-fill faker choices for likely sensitive columns. Fake-data editing is available in `copy` and `ddl+data` modes.
 
 ### Plan mode (dry run)
 
-Preview which objects would be copied without touching the target. In plan mode, only `--source` is required; `--target` is optional and is shown in the output only when provided:
-
-```sh
-mssql-copier --plan --source "sqlserver://..."
-```
+Preview which objects would be copied without touching a target. In the TUI, switch to `plan` mode and provide source settings plus any filters you want to test. `drop-existing` remains available in this mode so the plan output still reflects recreate behavior.
 
 ### DDL export
 
-Write a source-only DDL baseline file for the selected schema objects. The generated file is Liquibase-formatted SQL, so it can be used directly as a Liquibase changelog. This mode exports DDL only; it does not export table data.
+Write a source-only DDL baseline file for the selected schema objects. In the TUI, switch to `ddl` mode and fill in the DDL export path. The generated file is plain ordered SQL, so it can be used directly as a Flyway baseline migration. This mode exports DDL only; it does not export table data.
 
-```sh
-mssql-copier \
-  --source "sqlserver://..." \
-  --export-ddl ./export/initial.sql
-```
-
-The generated file contains ordered Liquibase changesets for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `--drop-existing` is not supported with this mode.
+The generated file contains ordered SQL statements for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `drop-existing` is not supported with this mode and is hidden in the TUI.
 
 ### Data export
 
-Write a source-only data seed file for the selected tables. The generated file is plain SQL with semicolon-terminated `SET IDENTITY_INSERT` and `INSERT` statements, with no `GO` batches.
+Write a source-only data seed file for the selected tables by switching to `ddl+data` mode. This mode generates both a DDL baseline file and a plain SQL data file with semicolon-terminated `SET IDENTITY_INSERT` and `INSERT` statements, with no `GO` batches.
 
-```sh
-mssql-copier \
-  --source "sqlserver://..." \
-  --export-data ./export/initial-data.sql
-```
+The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables constraints on the exported tables before loading rows and re-checks them at the end so the script can run cleanly after a schema import even when foreign keys already exist. `drop-existing` is not supported with this mode and is hidden in the TUI.
 
-The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables constraints on the exported tables before loading rows and re-checks them at the end so the script can run cleanly after a schema import even when foreign keys already exist. This mode exports table data only; it does not create schema objects, and `--drop-existing` is not supported with this mode.
-
-For integration testing, you can cap the export to the first `N` rows per selected table:
-
-```sh
-mssql-copier \
-  --source "sqlserver://..." \
-  --export-data ./export/test-seed.sql \
-  --export-data-rows 25
-```
+For integration testing, `ddl+data` mode also exposes an `export data rows` limit so you can cap the export to the first `N` rows per selected table.
 
 The row cap starts from the deterministic per-table sample and then pulls in any referenced parent rows needed to keep copied foreign keys valid inside the exported set.
 
@@ -116,14 +93,7 @@ The row cap starts from the deterministic per-table sample and then pulls in any
 
 Write a markdown summary after a successful copy run. The generated report includes overall totals, a few run highlights, and a per-table breakdown with copied rows, approximate source rows, copy mode, and notable details such as identity insert or bulk-copy fallback reasons.
 
-```sh
-mssql-copier \
-  --source "sqlserver://..." \
-  --target "sqlserver://..." \
-  --report-md ./export/copy-report.md
-```
-
-This mode augments a normal copy run; it does not replace the copy itself. Because the report is based on actual copied rows, `--report-md` cannot be combined with `--plan`, `--export-ddl`, or `--export-data`.
+In the TUI, the report path is shown only in `copy` mode. Because the report is based on actual copied rows, it cannot be combined with `plan`, `ddl`, or `ddl+data`.
 
 ### Filtering objects
 
@@ -131,33 +101,21 @@ Filters are applied by schema name and object name across copied tables and othe
 
 When a filtered copy excludes a referenced parent table and that table is not already present on the target, foreign key recreation for the copied child table is skipped.
 
-```sh
-# Copy only tables in the "sales" schema
-mssql-copier --source "..." --target "..." --include-schemas "sales"
+Configure these in the TUI or YAML:
 
-# Exclude audit tables
-mssql-copier --source "..." --target "..." --exclude-tables "*.audit_%"
-
-# Copy only specific tables (schema-qualified)
-mssql-copier --source "..." --target "..." --include-tables "dbo.orders,sales.customers"
-```
+- Copy only tables in the `sales` schema with `include-schemas: [sales]`
+- Exclude audit tables with `exclude-tables: ["*.audit_%"]`
+- Copy only specific tables with `include-tables: [dbo.orders, sales.customers]`
 
 ### Drop and recreate
 
-```sh
-mssql-copier --source "..." --target "..." --drop-existing
-```
+Enable `drop-existing` in the TUI when you want to recreate matching target tables before loading data.
 
 Alias user-defined types and user-defined table types are created before tables and procedures so recreated table definitions can keep alias types and TVP-based procedures can compile on the target. Sequences are created before tables so defaults like `NEXT VALUE FOR ...` work during table creation. Views are created after tables and indexes. Functions are created after views in dependency order. Synonyms are then recreated so late-bound references are available to programmable objects. Stored procedures are created after tables, views, functions, table types, and synonyms, with explicit dependency ordering across copied procedures. Table-scoped DML triggers are created after tables, procedures, and synonyms so they bind to recreated target tables without firing during the initial data copy and can reference copied synonyms. Existing target sequences, views, functions, procedures, triggers, and synonyms are refreshed on reruns. Alias types are recreated on rerun only when `--drop-existing` is set. Table types are created only when missing.
 
 ### Tuning
 
-```sh
-mssql-copier \
-  --source "..." --target "..." \
-  --workers 8 \
-  --batch-size 10000
-```
+Adjust `workers` and `batch-size` in `copy` mode to tune concurrent copy throughput.
 
 ### YAML configuration
 
@@ -173,13 +131,11 @@ mssql-copier
 mssql-copier --config ./config/prod.yml
 ```
 
-CLI flags override values from YAML when both are provided.
+The app loads the selected YAML file before opening the TUI, so the form starts with your saved values.
 
-`--export-ddl` and `--export-data` must be passed as CLI flags. This lets export modes still reuse YAML values such as `source`, `workers`, and include/exclude filters.
+`export-data-rows` only applies together with `export-data`, and in the TUI it is only shown in `ddl+data` mode.
 
-`--export-data-rows` is also CLI-only and only applies together with `--export-data`.
-
-`fake-data` is YAML-only. Each entry maps a column selector to a [`gofakeit`](https://github.com/brianvoe/gofakeit) function. Selectors support:
+`fake-data` can still be authored manually in YAML, but TUI-managed fake-data mappings are stored separately in `.mssql-copier/fake-data-mapping.yml` and keyed by the source database DSN. Each entry maps a column selector to a [`gofakeit`](https://github.com/brianvoe/gofakeit) function. Selectors support:
 
 - exact column name: `name`
 - exact table and column: `users.name`
@@ -192,7 +148,7 @@ Parameters are optional and are appended after the function name using `;` in de
 
 The TUI currently writes exact per-column selectors only: `schema.table.column`. Regex, table-level, and column-level selectors remain editable in YAML.
 
-The TUI can also export its current state to a YAML file path you choose on the form screen. This is useful for saving source/target settings, filters, fake-data rules, and optional LLM settings before running a copy.
+The TUI can also export its current state to a YAML file path you choose on the form screen. This is useful for saving source/target settings, filters, run mode outputs such as report and export paths, and optional LLM settings before running. Fake-data mappings chosen in the TUI are stored in `.mssql-copier/fake-data-mapping.yml` under the current source DSN instead of being written into the exported YAML file.
 
 Optional TUI LLM auto-selection is configured in YAML:
 
@@ -238,31 +194,15 @@ llm:
   base-url: https://api.openai.com/v1
 ```
 
-### Flags
+### Startup options
 
-| Flag | Default | Description |
+| Option | Default | Description |
 |------|---------|-------------|
-| `--config` | `mssql-copier.yml` | Path to YAML config file; optional when using the default path |
-| `--tui` | `false` | Launch the interactive terminal UI |
-| `--source` | *(required)* | Source SQL Server DSN |
-| `--target` | *(required unless `--plan`)* | Target SQL Server DSN; non-local targets require an interactive `yes` confirmation |
-| `--plan` | `false` | Print execution plan without modifying target |
-| `--export-ddl` | | Write Liquibase-formatted DDL to a file; `--target` is not required |
-| `--export-data` | | Write plain SQL data inserts to a file; `--target` is not required |
-| `--export-data-rows` | `0` | Limit `--export-data` to the first N rows per selected table |
-| `--report-md` | | Write a markdown copy report after a successful target copy |
-| `--workers` | `max(2, NumCPU())` | Number of concurrent table copy workers |
-| `--batch-size` | `5000` | Rows per bulk batch hint |
-| `--drop-existing` | `false` | Drop matching target tables before recreating |
-| `--verbose` | `true` | Log per-table activity |
-| `--include-schemas` | | Comma-separated schema names or wildcard patterns (YAML: list) |
-| `--exclude-schemas` | | Comma-separated schema names or wildcard patterns (YAML: list) |
-| `--include-tables` | | Comma-separated table names (`name` or `schema.name`) or wildcard patterns (YAML: list) |
-| `--exclude-tables` | | Comma-separated table names or wildcard patterns (YAML: list) |
+| `--config` | `mssql-copier.yml` | Path to the YAML file loaded before the TUI opens; optional when using the default path |
 
 ### Fake data replacement
 
-Configured fake-data rules are applied in both copy mode and `--export-data` mode before values are written to the target or serialized into SQL inserts.
+Configured fake-data rules are applied in both copy mode and `ddl+data` mode before values are written to the target or serialized into SQL inserts.
 
 Rule precedence is:
 
@@ -283,7 +223,7 @@ fake-data:
   price: Price;1;100
 ```
 
-The CLI validates every configured function and parameter list at startup and fails fast when a function name is unknown, parameters do not fit the selected function, or the function returns a complex value type that the copier cannot safely write to SQL Server.
+The app validates every configured function and parameter list before execution and fails fast when a function name is unknown, parameters do not fit the selected function, or the function returns a complex value type that the copier cannot safely write to SQL Server.
 
 In TUI mode, the fake-data picker only offers `gofakeit` functions whose output can already be written safely by the copier. Parameterized functions can be selected and configured directly from the TUI.
 

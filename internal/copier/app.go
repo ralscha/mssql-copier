@@ -47,6 +47,7 @@ type config struct {
 	ExcludeTables  []string
 	FakeData       map[string]string
 	LLM            llmConfig
+	Docker         dockerTargetConfig
 }
 
 type copier struct {
@@ -70,6 +71,7 @@ type copier struct {
 type yamlConfig struct {
 	SourceDSN      string            `yaml:"source"`
 	TargetDSN      string            `yaml:"target"`
+	ReportMDFile   *string           `yaml:"report-md"`
 	Workers        *int              `yaml:"workers"`
 	BatchSize      *int              `yaml:"batch-size"`
 	Verbose        *bool             `yaml:"verbose"`
@@ -81,13 +83,10 @@ type yamlConfig struct {
 	ExcludeTables  []string          `yaml:"exclude-tables"`
 	FakeData       map[string]string `yaml:"fake-data"`
 	LLM            *yamlLLMConfig    `yaml:"llm"`
+	Docker         *yamlDockerConfig `yaml:"docker"`
 	ExportDDLFile  *string           `yaml:"export-ddl"`
 	ExportDataFile *string           `yaml:"export-data"`
-}
-
-type mainOptions struct {
-	cfg    config
-	useTUI bool
+	ExportDataRows *int              `yaml:"export-data-rows"`
 }
 
 func Main() {
@@ -98,16 +97,22 @@ func Main() {
 }
 
 func runMain() error {
-	opts := parseFlags()
-	if opts.useTUI {
-		return runTUI(opts.cfg)
-	}
-	return executeConfig(opts.cfg)
+	return runTUI(parseFlags())
 }
 
 func executeConfig(cfg config) error {
 	if err := cfg.validate(); err != nil {
 		return err
+	}
+	if cfg.Docker.Enabled {
+		if err := cfg.Docker.ensurePassword(); err != nil {
+			return fmt.Errorf("generate docker SA password: %w", err)
+		}
+		dsn, err := setupDockerTarget(cfg.Docker)
+		if err != nil {
+			return fmt.Errorf("setup docker target: %w", err)
+		}
+		cfg.TargetDSN = dsn
 	}
 	if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
 		return err
@@ -127,6 +132,9 @@ func executeConfig(cfg config) error {
 
 	var targetDB *sql.DB
 	if cfg.requiresTarget() {
+		if err := ensureTargetDatabase(cfg.TargetDSN, cfg.Workers+2); err != nil {
+			return fmt.Errorf("ensure target database: %w", err)
+		}
 		targetDB, err = openDB(cfg.TargetDSN, cfg.Workers+2)
 		if err != nil {
 			return fmt.Errorf("open target: %w", err)
@@ -149,46 +157,15 @@ func executeConfig(cfg config) error {
 	return nil
 }
 
-func parseFlags() mainOptions {
+func parseFlags() config {
 	defaultWorkers := max(2, runtime.NumCPU())
 	defaultBatchSize := 5000
 	configureUsage(flag.CommandLine, os.Args[0])
 
-	var sourceDSN string
-	var targetDSN string
-	var exportDDLFile string
-	var exportDataFile string
-	var exportDataRows int
-	var reportMDFile string
-	workers := defaultWorkers
-	batchSize := defaultBatchSize
-	verbose := true
-	var plan bool
-	var dropExisting bool
-	var useTUI bool
 	configPath := defaultConfigPath
 
 	flag.StringVar(&configPath, "config", defaultConfigPath, "path to YAML config file")
-	flag.BoolVar(&useTUI, "tui", false, "launch the interactive terminal UI")
-	flag.StringVar(&sourceDSN, "source", "", "source SQL Server DSN")
-	flag.StringVar(&targetDSN, "target", "", "target SQL Server DSN")
-	flag.StringVar(&exportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
-	flag.StringVar(&exportDataFile, "export-data", "", "write plain SQL data inserts to the given path")
-	flag.IntVar(&exportDataRows, "export-data-rows", 0, "limit export-data to the first N rows per table")
-	flag.StringVar(&reportMDFile, "report-md", "", "write a markdown copy report to the given path after a successful run")
-	flag.IntVar(&workers, "workers", defaultWorkers, "number of concurrent table copy workers")
-	flag.IntVar(&batchSize, "batch-size", defaultBatchSize, "rows per bulk batch hint")
-	flag.BoolVar(&verbose, "verbose", true, "log per-table activity")
-	flag.BoolVar(&plan, "plan", false, "print the filtered execution plan without modifying the target")
-	flag.BoolVar(&dropExisting, "drop-existing", false, "drop matching target tables before recreating them")
-	var includeSchemas string
-	var excludeSchemas string
-	var includeTables string
-	var excludeTables string
-	flag.StringVar(&includeSchemas, "include-schemas", "", "comma-separated schema names or wildcard patterns to copy")
-	flag.StringVar(&excludeSchemas, "exclude-schemas", "", "comma-separated schema names or wildcard patterns to skip")
-	flag.StringVar(&includeTables, "include-tables", "", "comma-separated table names, schema.table names, or wildcard patterns to copy")
-	flag.StringVar(&excludeTables, "exclude-tables", "", "comma-separated table names, schema.table names, or wildcard patterns to skip")
+
 	flag.Parse()
 
 	explicit := map[string]bool{}
@@ -196,11 +173,11 @@ func parseFlags() mainOptions {
 		explicit[f.Name] = true
 	})
 
-	opts := mainOptions{cfg: config{
+	cfg := config{
 		Workers:   defaultWorkers,
 		BatchSize: defaultBatchSize,
 		Verbose:   true,
-	}}
+	}
 
 	yamlCfg, loaded, err := loadYAMLConfig(configPath, explicit["config"])
 	if err != nil {
@@ -209,69 +186,20 @@ func parseFlags() mainOptions {
 		os.Exit(2)
 	}
 	if loaded {
-		yamlCfg.applyTo(&opts.cfg)
+		yamlCfg.applyTo(&cfg)
 	}
 
-	if explicit["source"] {
-		opts.cfg.SourceDSN = strings.TrimSpace(sourceDSN)
+	cfg.ConfigPath = strings.TrimSpace(configPath)
+	if cfg.ConfigPath == "" {
+		cfg.ConfigPath = defaultConfigPath
 	}
-	if explicit["target"] {
-		opts.cfg.TargetDSN = strings.TrimSpace(targetDSN)
+	if cfg.Workers < 1 {
+		cfg.Workers = 1
 	}
-	if explicit["workers"] {
-		opts.cfg.Workers = workers
+	if cfg.BatchSize < 1 {
+		cfg.BatchSize = 5000
 	}
-	if explicit["batch-size"] {
-		opts.cfg.BatchSize = batchSize
-	}
-	if explicit["verbose"] {
-		opts.cfg.Verbose = verbose
-	}
-	if explicit["plan"] {
-		opts.cfg.Plan = plan
-	}
-	if explicit["drop-existing"] {
-		opts.cfg.DropExisting = dropExisting
-	}
-	if explicit["include-schemas"] {
-		opts.cfg.IncludeSchemas = parseList(includeSchemas)
-	}
-	if explicit["exclude-schemas"] {
-		opts.cfg.ExcludeSchemas = parseList(excludeSchemas)
-	}
-	if explicit["include-tables"] {
-		opts.cfg.IncludeTables = parseList(includeTables)
-	}
-	if explicit["exclude-tables"] {
-		opts.cfg.ExcludeTables = parseList(excludeTables)
-	}
-
-	opts.cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
-	opts.cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
-	opts.cfg.ExportDataRows = exportDataRows
-	opts.cfg.ReportMDFile = strings.TrimSpace(reportMDFile)
-	opts.cfg.ConfigPath = strings.TrimSpace(configPath)
-	if opts.cfg.ConfigPath == "" {
-		opts.cfg.ConfigPath = defaultConfigPath
-	}
-	opts.useTUI = useTUI
-
-	if !opts.useTUI && (opts.cfg.SourceDSN == "" || (opts.cfg.requiresTarget() && opts.cfg.TargetDSN == "")) {
-		if opts.cfg.Plan || opts.cfg.ExportDDLFile != "" || opts.cfg.ExportDataFile != "" {
-			fmt.Fprintln(os.Stderr, "source DSN is required")
-		} else {
-			fmt.Fprintln(os.Stderr, "source and target DSNs are required")
-		}
-		flag.Usage()
-		os.Exit(2)
-	}
-	if opts.cfg.Workers < 1 {
-		opts.cfg.Workers = 1
-	}
-	if opts.cfg.BatchSize < 1 {
-		opts.cfg.BatchSize = 5000
-	}
-	return opts
+	return cfg
 }
 
 func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
@@ -298,13 +226,6 @@ func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return yamlConfig{}, false, fmt.Errorf("parse config file %q: %w", path, err)
 	}
-	if cfg.ExportDDLFile != nil {
-		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-ddl; use the --export-ddl flag", path)
-	}
-	if cfg.ExportDataFile != nil {
-		return yamlConfig{}, false, fmt.Errorf("config file %q cannot set export-data; use the --export-data flag", path)
-	}
-
 	return cfg, true, nil
 }
 
@@ -414,6 +335,9 @@ func (yamlCfg yamlConfig) applyTo(cfg *config) {
 	if yamlCfg.BatchSize != nil {
 		cfg.BatchSize = *yamlCfg.BatchSize
 	}
+	if yamlCfg.ReportMDFile != nil {
+		cfg.ReportMDFile = strings.TrimSpace(*yamlCfg.ReportMDFile)
+	}
 	if yamlCfg.Verbose != nil {
 		cfg.Verbose = *yamlCfg.Verbose
 	}
@@ -429,6 +353,16 @@ func (yamlCfg yamlConfig) applyTo(cfg *config) {
 	cfg.ExcludeTables = normalizeList(yamlCfg.ExcludeTables)
 	cfg.FakeData = normalizeFakeData(yamlCfg.FakeData)
 	cfg.LLM = normalizeLLMConfig(yamlCfg.LLM)
+	cfg.Docker = normalizeDockerConfig(yamlCfg.Docker)
+	if yamlCfg.ExportDDLFile != nil {
+		cfg.ExportDDLFile = strings.TrimSpace(*yamlCfg.ExportDDLFile)
+	}
+	if yamlCfg.ExportDataFile != nil {
+		cfg.ExportDataFile = strings.TrimSpace(*yamlCfg.ExportDataFile)
+	}
+	if yamlCfg.ExportDataRows != nil {
+		cfg.ExportDataRows = *yamlCfg.ExportDataRows
+	}
 }
 
 func normalizeList(values []string) []string {
@@ -610,6 +544,41 @@ func openDB(dsn string, maxConns int) (*sql.DB, error) {
 	return db, nil
 }
 
+func ensureTargetDatabase(targetDSN string, maxConns int) error {
+	databaseName := sqlServerDSNDatabaseName(targetDSN)
+	if databaseName == "" || strings.EqualFold(databaseName, "master") {
+		return nil
+	}
+
+	adminDSN, err := sqlServerDSNWithDatabase(targetDSN, "master")
+	if err != nil {
+		return fmt.Errorf("rewrite target dsn for master: %w", err)
+	}
+
+	adminDB, err := openDB(adminDSN, max(1, maxConns))
+	if err != nil {
+		return fmt.Errorf("open target admin connection: %w", err)
+	}
+	defer closeAndLog(adminDB, "target admin database")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var exists int
+	if err := adminDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.databases WHERE name = @p1", databaseName).Scan(&exists); err != nil {
+		return fmt.Errorf("check target database %q: %w", databaseName, err)
+	}
+	if exists > 0 {
+		return nil
+	}
+
+	if _, err := adminDB.ExecContext(ctx, "IF DB_ID(@p1) IS NULL BEGIN DECLARE @sql nvarchar(max) = N'CREATE DATABASE ' + QUOTENAME(@p1); EXEC(@sql); END", databaseName); err != nil {
+		return fmt.Errorf("create target database %q: %w", databaseName, err)
+	}
+	log.Printf("created target database %q", databaseName)
+	return nil
+}
+
 func (c *copier) run(ctx context.Context) error {
 	start := time.Now()
 	log.Printf("discovering source metadata")
@@ -689,7 +658,7 @@ func (c *copier) run(ctx context.Context) error {
 		return nil
 	}
 	if c.cfg.ExportDDLFile != "" {
-		if err := c.writeLiquibaseInitialQueryFile(); err != nil {
+		if err := c.writeFlywayBaselineFile(); err != nil {
 			return err
 		}
 		log.Printf("wrote DDL export file to %s", c.cfg.ExportDDLFile)

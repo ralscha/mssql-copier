@@ -1,0 +1,52 @@
+# Development SQL Server with Northwind sample database.
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down          (data volume is kept)
+# Reset:  docker compose down --volumes (wipes all data)
+#
+# DSN (master):   sqlserver://sa:Dev%40Northwind1@localhost:1433?encrypt=disable
+# DSN (Northwind): sqlserver://sa:Dev%40Northwind1@localhost:1433?database=Northwind&encrypt=disable
+#   Note: the @ in the password is URL-encoded as %40.
+
+name: mssql-dev
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    container_name: mssql-dev
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Dev@Northwind1"
+    ports:
+      - "1433:1433"
+    volumes:
+      - ./sqlcmd.sh:/sqlcmd.sh:ro
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /bin/bash -c '</dev/tcp/127.0.0.1/1433' || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  mssql-init:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    container_name: mssql-init
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./sqlcmd.sh:/sqlcmd.sh:ro
+      - ./init-db.sh:/init-db.sh:ro
+      - ./northwind.sql:/northwind.sql:ro
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - /init-db.sh
+    restart: "no"
+
+volumes:
+  mssql_data:

@@ -22,12 +22,18 @@ include-tables:
 exclude-tables:
   - "*.audit_%"
 
-fake-data:
-  users.name: Name
-  email: Email
-  name.*: FirstName
-  summary: LoremIpsumSentence;10
-  amount: Price;1;100
+# TUI-managed fake-data mappings are stored separately in
+# .mssql-copier/fake-data-mapping.yml and keyed by the source DSN.
+# If you want to define fake-data mappings manually, you can still add a
+# fake-data: block here, but the TUI will not export those mappings back into
+# this file.
+#
+# fake-data:
+#   users.name: Name
+#   email: Email
+#   name.*: FirstName
+#   summary: LoremIpsumSentence;10
+#   amount: Price;1;100
 
 # Optional LLM config for TUI fake-data auto-selection.
 # The TUI only shows the auto-select action when this block is present and
