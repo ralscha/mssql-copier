@@ -120,6 +120,95 @@ func TestWritePersistedConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSameSourceAndTargetDatabase(t *testing.T) {
+	same := []struct {
+		name string
+		src  string
+		dst  string
+	}{
+		{
+			name: "identical URL DSNs",
+			src:  "sqlserver://sa:pass@db.example.com:1433?database=MyDB",
+			dst:  "sqlserver://sa:pass@db.example.com:1433?database=MyDB",
+		},
+		{
+			name: "default port vs explicit 1433",
+			src:  "sqlserver://sa:pass@db.example.com?database=MyDB",
+			dst:  "sqlserver://sa:pass@db.example.com:1433?database=MyDB",
+		},
+		{
+			name: "database name case insensitive",
+			src:  "sqlserver://sa:pass@db.example.com?database=mydb",
+			dst:  "sqlserver://sa:pass@db.example.com?database=MYDB",
+		},
+		{
+			name: "server name case insensitive",
+			src:  "sqlserver://sa:pass@DB.EXAMPLE.COM?database=MyDB",
+			dst:  "sqlserver://sa:pass@db.example.com?database=MyDB",
+		},
+	}
+	for _, tc := range same {
+		t.Run("same/"+tc.name, func(t *testing.T) {
+			if !sameSourceAndTargetDatabase(tc.src, tc.dst) {
+				t.Fatalf("expected same, got different for src=%q dst=%q", tc.src, tc.dst)
+			}
+		})
+	}
+
+	different := []struct {
+		name string
+		src  string
+		dst  string
+	}{
+		{
+			name: "different databases",
+			src:  "sqlserver://sa:pass@db.example.com?database=SourceDB",
+			dst:  "sqlserver://sa:pass@db.example.com?database=TargetDB",
+		},
+		{
+			name: "different servers",
+			src:  "sqlserver://sa:pass@source.example.com?database=MyDB",
+			dst:  "sqlserver://sa:pass@target.example.com?database=MyDB",
+		},
+		{
+			name: "different ports",
+			src:  "sqlserver://sa:pass@db.example.com:1433?database=MyDB",
+			dst:  "sqlserver://sa:pass@db.example.com:1434?database=MyDB",
+		},
+		{
+			name: "empty source",
+			src:  "",
+			dst:  "sqlserver://sa:pass@db.example.com?database=MyDB",
+		},
+	}
+	for _, tc := range different {
+		t.Run("different/"+tc.name, func(t *testing.T) {
+			if sameSourceAndTargetDatabase(tc.src, tc.dst) {
+				t.Fatalf("expected different, got same for src=%q dst=%q", tc.src, tc.dst)
+			}
+		})
+	}
+}
+
+func TestConfigValidateSameSourceAndTarget(t *testing.T) {
+	dsn := "sqlserver://sa:pass@db.example.com?database=MyDB"
+	cfg := config{SourceDSN: dsn, TargetDSN: dsn}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error when source and target are the same database, got nil")
+	}
+	want := "source and target DSNs must not refer to the same database"
+	if err.Error() != want {
+		t.Fatalf("validate() error = %q, want %q", err.Error(), want)
+	}
+
+	// export-ddl mode does not use the target, so same DSN should be allowed
+	exportCfg := config{SourceDSN: dsn, TargetDSN: dsn, ExportDDLFile: "schema.sql"}
+	if err := exportCfg.validate(); err != nil {
+		t.Fatalf("expected no error for export-ddl mode with same DSN, got %v", err)
+	}
+}
+
 func TestConfigValidateExportDataRows(t *testing.T) {
 	tests := []struct {
 		name string

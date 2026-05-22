@@ -404,7 +404,30 @@ func (cfg config) requiresTarget() bool {
 	return !cfg.Plan && cfg.ExportDDLFile == "" && cfg.ExportDataFile == ""
 }
 
+func sameSourceAndTargetDatabase(sourceDSN, targetDSN string) bool {
+	src := parseSQLServerDSNForm(sourceDSN)
+	dst := parseSQLServerDSNForm(targetDSN)
+	if src.Server == "" || dst.Server == "" {
+		return false
+	}
+	const defaultPort = "1433"
+	srcPort := src.Port
+	if srcPort == "" {
+		srcPort = defaultPort
+	}
+	dstPort := dst.Port
+	if dstPort == "" {
+		dstPort = defaultPort
+	}
+	return strings.EqualFold(src.Server, dst.Server) &&
+		srcPort == dstPort &&
+		strings.EqualFold(src.Database, dst.Database)
+}
+
 func (cfg config) validate() error {
+	if cfg.requiresTarget() && sameSourceAndTargetDatabase(cfg.SourceDSN, cfg.TargetDSN) {
+		return fmt.Errorf("source and target DSNs must not refer to the same database")
+	}
 	if cfg.ExportDDLFile != "" && cfg.ExportDataFile != "" {
 		return fmt.Errorf("-export-ddl cannot be combined with -export-data")
 	}
