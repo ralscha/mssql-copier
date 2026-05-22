@@ -47,6 +47,60 @@ func TestLoadYAMLConfigRejectsExportFlags(t *testing.T) {
 	}
 }
 
+func TestWritePersistedConfigRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "exported.yml")
+
+	cfg := config{
+		ConfigPath:     path,
+		SourceDSN:      "sqlserver://source",
+		TargetDSN:      "sqlserver://target",
+		Workers:        4,
+		BatchSize:      2500,
+		Verbose:        true,
+		DropExisting:   true,
+		IncludeSchemas: []string{"sales", "dbo"},
+		ExcludeSchemas: []string{"audit"},
+		IncludeTables:  []string{"sales.orders"},
+		ExcludeTables:  []string{"*.audit_%"},
+		FakeData:       map[string]string{"dbo.users.summary": "loremipsumsentence;10"},
+		LLM:            llmConfig{Provider: "openai", Model: "gpt-4o-mini", APIKeyEnv: "OPENAI_API_KEY", BaseURL: "https://api.openai.com/v1"},
+	}
+
+	if err := writePersistedConfig(path, cfg); err != nil {
+		t.Fatalf("writePersistedConfig() error = %v", err)
+	}
+
+	yamlCfg, loaded, err := loadYAMLConfig(path, true)
+	if err != nil {
+		t.Fatalf("loadYAMLConfig() error = %v", err)
+	}
+	if !loaded {
+		t.Fatal("expected exported config to load")
+	}
+
+	var got config
+	yamlCfg.applyTo(&got)
+	if got.SourceDSN != cfg.SourceDSN || got.TargetDSN != cfg.TargetDSN {
+		t.Fatalf("dsn round-trip mismatch: got %+v want %+v", got, cfg)
+	}
+	if got.Workers != cfg.Workers || got.BatchSize != cfg.BatchSize || got.DropExisting != cfg.DropExisting || got.Verbose != cfg.Verbose {
+		t.Fatalf("settings round-trip mismatch: got %+v want %+v", got, cfg)
+	}
+	if len(got.IncludeSchemas) != 2 || got.IncludeSchemas[0] != "sales" || got.IncludeSchemas[1] != "dbo" {
+		t.Fatalf("include-schemas round-trip = %#v", got.IncludeSchemas)
+	}
+	if len(got.ExcludeTables) != 1 || got.ExcludeTables[0] != "*.audit_%" {
+		t.Fatalf("exclude-tables round-trip = %#v", got.ExcludeTables)
+	}
+	if got.FakeData["dbo.users.summary"] != "loremipsumsentence;10" {
+		t.Fatalf("fake-data round-trip = %#v", got.FakeData)
+	}
+	if got.LLM.Provider != "openai" || got.LLM.Model != "gpt-4o-mini" || got.LLM.APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("llm round-trip = %#v", got.LLM)
+	}
+}
+
 func TestConfigValidateExportDataRows(t *testing.T) {
 	tests := []struct {
 		name string
@@ -140,6 +194,7 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 	verbose := false
 	plan := true
 	dropExisting := true
+	byAzure := true
 	whitespaceKey := " users.name "
 	yCfg := yamlConfig{
 		SourceDSN:      " sqlserver://source ",
@@ -157,6 +212,13 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 			whitespaceKey:  " Person.Name ",
 			"customer_ssn": "ssn",
 			"ignored":      " ",
+		},
+		LLM: &yamlLLMConfig{
+			Model:      " gpt-4o-mini ",
+			BaseURL:    " https://example.invalid/v1 ",
+			APIKeyEnv:  " OPENAI_API_KEY ",
+			ByAzure:    &byAzure,
+			APIVersion: " 2024-10-21 ",
 		},
 	}
 
@@ -189,6 +251,9 @@ func TestYAMLApplyAndNormalizeList(t *testing.T) {
 	}
 	if len(cfg.FakeData) != 2 || cfg.FakeData["users.name"] != "Person.Name" || cfg.FakeData["customer_ssn"] != "ssn" {
 		t.Fatalf("fake-data = %#v, want normalized fake-data map", cfg.FakeData)
+	}
+	if cfg.LLM.Provider != "openai" || cfg.LLM.Model != "gpt-4o-mini" || cfg.LLM.BaseURL != "https://example.invalid/v1" || cfg.LLM.APIKeyEnv != "OPENAI_API_KEY" || !cfg.LLM.ByAzure || cfg.LLM.APIVersion != "2024-10-21" {
+		t.Fatalf("llm = %#v, want normalized llm config", cfg.LLM)
 	}
 }
 

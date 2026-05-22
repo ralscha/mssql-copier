@@ -130,6 +130,35 @@ func TestDataFakerMatchesRegexSelector(t *testing.T) {
 	}
 }
 
+func TestDataFakerMatchRuleReturnsWinningRule(t *testing.T) {
+	faker, err := newDataFaker(map[string]string{
+		"dbo.users.email": "Email",
+		"email":           "FirstName",
+	})
+	if err != nil {
+		t.Fatalf("newDataFaker() unexpected error: %v", err)
+	}
+
+	rule, ok := faker.matchRule(tableMeta{Schema: "dbo", Name: "users"}, columnMeta{Name: "email", SystemTypeName: "nvarchar"})
+	if !ok {
+		t.Fatal("expected rule match")
+	}
+	if rule.lookupName != "email" {
+		t.Fatalf("matchRule() lookupName = %q, want %q", rule.lookupName, "email")
+	}
+}
+
+func TestBuildFakeFunctionConfigRoundTripWithParams(t *testing.T) {
+	rule, _, err := compileFakeDataRule("dbo.users.summary", buildFakeFunctionConfig("loremipsumsentence", []string{"10"}))
+	if err != nil {
+		t.Fatalf("compileFakeDataRule() error = %v", err)
+	}
+	got := buildFakeFunctionConfig(rule.lookupName, flattenFakeParams(rule.info, rule.params))
+	if got != "loremipsumsentence;10" {
+		t.Fatalf("buildFakeFunctionConfig() = %q, want %q", got, "loremipsumsentence;10")
+	}
+}
+
 func TestReplaceValueFallsBackToOriginalNormalization(t *testing.T) {
 	c := &copier{}
 	got, err := c.replaceValue(tableMeta{}, columnMeta{SystemTypeName: "decimal"}, []byte("123.45"))

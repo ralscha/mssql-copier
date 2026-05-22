@@ -29,6 +29,7 @@ var (
 )
 
 type config struct {
+	ConfigPath     string
 	SourceDSN      string
 	TargetDSN      string
 	ExportDDLFile  string
@@ -45,6 +46,7 @@ type config struct {
 	IncludeTables  []string
 	ExcludeTables  []string
 	FakeData       map[string]string
+	LLM            llmConfig
 }
 
 type copier struct {
@@ -78,8 +80,14 @@ type yamlConfig struct {
 	IncludeTables  []string          `yaml:"include-tables"`
 	ExcludeTables  []string          `yaml:"exclude-tables"`
 	FakeData       map[string]string `yaml:"fake-data"`
+	LLM            *yamlLLMConfig    `yaml:"llm"`
 	ExportDDLFile  *string           `yaml:"export-ddl"`
 	ExportDataFile *string           `yaml:"export-data"`
+}
+
+type mainOptions struct {
+	cfg    config
+	useTUI bool
 }
 
 func Main() {
@@ -90,7 +98,14 @@ func Main() {
 }
 
 func runMain() error {
-	cfg := parseFlags()
+	opts := parseFlags()
+	if opts.useTUI {
+		return runTUI(opts.cfg)
+	}
+	return executeConfig(opts.cfg)
+}
+
+func executeConfig(cfg config) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -134,7 +149,7 @@ func runMain() error {
 	return nil
 }
 
-func parseFlags() config {
+func parseFlags() mainOptions {
 	defaultWorkers := max(2, runtime.NumCPU())
 	defaultBatchSize := 5000
 	configureUsage(flag.CommandLine, os.Args[0])
@@ -150,9 +165,11 @@ func parseFlags() config {
 	verbose := true
 	var plan bool
 	var dropExisting bool
+	var useTUI bool
 	configPath := defaultConfigPath
 
 	flag.StringVar(&configPath, "config", defaultConfigPath, "path to YAML config file")
+	flag.BoolVar(&useTUI, "tui", false, "launch the interactive terminal UI")
 	flag.StringVar(&sourceDSN, "source", "", "source SQL Server DSN")
 	flag.StringVar(&targetDSN, "target", "", "target SQL Server DSN")
 	flag.StringVar(&exportDDLFile, "export-ddl", "", "write Liquibase-formatted DDL to the given path")
@@ -179,11 +196,11 @@ func parseFlags() config {
 		explicit[f.Name] = true
 	})
 
-	cfg := config{
+	opts := mainOptions{cfg: config{
 		Workers:   defaultWorkers,
 		BatchSize: defaultBatchSize,
 		Verbose:   true,
-	}
+	}}
 
 	yamlCfg, loaded, err := loadYAMLConfig(configPath, explicit["config"])
 	if err != nil {
@@ -192,50 +209,55 @@ func parseFlags() config {
 		os.Exit(2)
 	}
 	if loaded {
-		yamlCfg.applyTo(&cfg)
+		yamlCfg.applyTo(&opts.cfg)
 	}
 
 	if explicit["source"] {
-		cfg.SourceDSN = strings.TrimSpace(sourceDSN)
+		opts.cfg.SourceDSN = strings.TrimSpace(sourceDSN)
 	}
 	if explicit["target"] {
-		cfg.TargetDSN = strings.TrimSpace(targetDSN)
+		opts.cfg.TargetDSN = strings.TrimSpace(targetDSN)
 	}
 	if explicit["workers"] {
-		cfg.Workers = workers
+		opts.cfg.Workers = workers
 	}
 	if explicit["batch-size"] {
-		cfg.BatchSize = batchSize
+		opts.cfg.BatchSize = batchSize
 	}
 	if explicit["verbose"] {
-		cfg.Verbose = verbose
+		opts.cfg.Verbose = verbose
 	}
 	if explicit["plan"] {
-		cfg.Plan = plan
+		opts.cfg.Plan = plan
 	}
 	if explicit["drop-existing"] {
-		cfg.DropExisting = dropExisting
+		opts.cfg.DropExisting = dropExisting
 	}
 	if explicit["include-schemas"] {
-		cfg.IncludeSchemas = parseList(includeSchemas)
+		opts.cfg.IncludeSchemas = parseList(includeSchemas)
 	}
 	if explicit["exclude-schemas"] {
-		cfg.ExcludeSchemas = parseList(excludeSchemas)
+		opts.cfg.ExcludeSchemas = parseList(excludeSchemas)
 	}
 	if explicit["include-tables"] {
-		cfg.IncludeTables = parseList(includeTables)
+		opts.cfg.IncludeTables = parseList(includeTables)
 	}
 	if explicit["exclude-tables"] {
-		cfg.ExcludeTables = parseList(excludeTables)
+		opts.cfg.ExcludeTables = parseList(excludeTables)
 	}
 
-	cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
-	cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
-	cfg.ExportDataRows = exportDataRows
-	cfg.ReportMDFile = strings.TrimSpace(reportMDFile)
+	opts.cfg.ExportDDLFile = strings.TrimSpace(exportDDLFile)
+	opts.cfg.ExportDataFile = strings.TrimSpace(exportDataFile)
+	opts.cfg.ExportDataRows = exportDataRows
+	opts.cfg.ReportMDFile = strings.TrimSpace(reportMDFile)
+	opts.cfg.ConfigPath = strings.TrimSpace(configPath)
+	if opts.cfg.ConfigPath == "" {
+		opts.cfg.ConfigPath = defaultConfigPath
+	}
+	opts.useTUI = useTUI
 
-	if cfg.SourceDSN == "" || (cfg.requiresTarget() && cfg.TargetDSN == "") {
-		if cfg.Plan || cfg.ExportDDLFile != "" || cfg.ExportDataFile != "" {
+	if !opts.useTUI && (opts.cfg.SourceDSN == "" || (opts.cfg.requiresTarget() && opts.cfg.TargetDSN == "")) {
+		if opts.cfg.Plan || opts.cfg.ExportDDLFile != "" || opts.cfg.ExportDataFile != "" {
 			fmt.Fprintln(os.Stderr, "source DSN is required")
 		} else {
 			fmt.Fprintln(os.Stderr, "source and target DSNs are required")
@@ -243,13 +265,13 @@ func parseFlags() config {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if cfg.Workers < 1 {
-		cfg.Workers = 1
+	if opts.cfg.Workers < 1 {
+		opts.cfg.Workers = 1
 	}
-	if cfg.BatchSize < 1 {
-		cfg.BatchSize = 5000
+	if opts.cfg.BatchSize < 1 {
+		opts.cfg.BatchSize = 5000
 	}
-	return cfg
+	return opts
 }
 
 func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
@@ -406,6 +428,7 @@ func (yamlCfg yamlConfig) applyTo(cfg *config) {
 	cfg.IncludeTables = normalizeList(yamlCfg.IncludeTables)
 	cfg.ExcludeTables = normalizeList(yamlCfg.ExcludeTables)
 	cfg.FakeData = normalizeFakeData(yamlCfg.FakeData)
+	cfg.LLM = normalizeLLMConfig(yamlCfg.LLM)
 }
 
 func normalizeList(values []string) []string {

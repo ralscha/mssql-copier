@@ -193,9 +193,6 @@ func (a aliasTypeMeta) CreateTypeSQL() (string, error) {
 	}
 
 	createSQL := fmt.Sprintf("CREATE TYPE %s FROM %s %s;", a.FQTN(), baseDecl, nullability)
-	if escapeSQLString(a.FQTN()) == "" {
-		return createSQL, nil
-	}
 	return fmt.Sprintf("IF TYPE_ID(N'%s') IS NULL\nBEGIN\n    %s\nEND", escapeSQLString(a.FQTN()), createSQL), nil
 }
 

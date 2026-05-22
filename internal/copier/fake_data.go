@@ -273,31 +273,39 @@ func (f *dataFaker) fakeValue(faker *gofakeit.Faker, table tableMeta, col column
 	if faker == nil {
 		faker = gofakeit.GlobalFaker
 	}
+	rule, ok := f.matchRule(table, col)
+	if !ok {
+		return nil, false, nil
+	}
+	value, err := rule.info.Generate(faker, cloneFakeParams(rule.params), &rule.info)
+	return value, true, err
+}
+
+func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bool) {
+	if f == nil {
+		return fakeDataRule{}, false
+	}
 
 	fullName := normalizeFilterName(table.Schema + "." + table.Name + "." + col.Name)
 	tableName := normalizeFilterName(table.Name + "." + col.Name)
 	columnName := normalizeFilterName(col.Name)
 
 	if rule, ok := f.fullNameRules[fullName]; ok {
-		value, err := rule.info.Generate(faker, cloneFakeParams(rule.params), &rule.info)
-		return value, true, err
+		return rule, true
 	}
 	if rule, ok := f.tableNameRules[tableName]; ok {
-		value, err := rule.info.Generate(faker, cloneFakeParams(rule.params), &rule.info)
-		return value, true, err
+		return rule, true
 	}
 	if rule, ok := f.columnRules[columnName]; ok {
-		value, err := rule.info.Generate(faker, cloneFakeParams(rule.params), &rule.info)
-		return value, true, err
+		return rule, true
 	}
 	for _, rule := range f.regexRules {
 		if rule.regex.MatchString(fullName) || rule.regex.MatchString(tableName) || rule.regex.MatchString(columnName) {
-			value, err := rule.info.Generate(faker, cloneFakeParams(rule.params), &rule.info)
-			return value, true, err
+			return rule, true
 		}
 	}
 
-	return nil, false, nil
+	return fakeDataRule{}, false
 }
 
 func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, error) {

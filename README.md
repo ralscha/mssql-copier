@@ -22,6 +22,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Markdown copy report** — writes a post-run markdown summary with per-table copied row counts and run highlights
 - **Drop-existing mode** — optionally drop matching target tables before recreating them
 - **Fake data replacement** — replace configured column values during copy and data export using `gofakeit`
+- **Terminal UI** — interactive Bubble Tea mode for entering source/target settings, include/exclude filters, exporting YAML config, and editing exact per-column fake-data rules
 - **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
 - **Integration tested** — includes testcontainers-based integration tests
 
@@ -55,6 +56,18 @@ mssql-copier \
 ```
 
 When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the CLI asks for an explicit `yes` before it opens the target connection.
+
+### TUI mode
+
+Launch the interactive terminal UI with:
+
+```sh
+mssql-copier --tui
+```
+
+The TUI lets you enter source and target DSNs, adjust core copy settings, edit include/exclude schema and table filters, and export the current state back into a YAML config file.
+
+Inside the fake-data editor, the TUI shows copyable source columns and lets you assign exact `schema.table.column` faker rules from the supported `gofakeit` catalog. Functions with parameters can be configured directly in the TUI using semicolon-separated argument values in declared order. When an `llm` config is present and usable, the editor also exposes an auto-select action that asks the configured model to pre-fill faker choices for likely sensitive columns.
 
 ### Plan mode (dry run)
 
@@ -177,6 +190,22 @@ Use `gofakeit` function names like `Email`, `FirstName`, or `LoremIpsumSentence`
 
 Parameters are optional and are appended after the function name using `;` in declared order. Examples: `LoremIpsumSentence;10` and `Price;1;100`.
 
+The TUI currently writes exact per-column selectors only: `schema.table.column`. Regex, table-level, and column-level selectors remain editable in YAML.
+
+The TUI can also export its current state to a YAML file path you choose on the form screen. This is useful for saving source/target settings, filters, fake-data rules, and optional LLM settings before running a copy.
+
+Optional TUI LLM auto-selection is configured in YAML:
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  api-key-env: OPENAI_API_KEY
+  base-url: https://api.openai.com/v1
+```
+
+`provider` currently supports `openai`. `api-key-env` is preferred so secrets stay out of the config file. Azure OpenAI can be used with `by-azure`, `base-url`, and `api-version`.
+
 Example `mssql-copier.yml`:
 
 ```yaml
@@ -202,6 +231,11 @@ fake-data:
   name.*: FirstName
   summary: LoremIpsumSentence;10
   amount: Price;1;100
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  api-key-env: OPENAI_API_KEY
+  base-url: https://api.openai.com/v1
 ```
 
 ### Flags
@@ -209,6 +243,7 @@ fake-data:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | `mssql-copier.yml` | Path to YAML config file; optional when using the default path |
+| `--tui` | `false` | Launch the interactive terminal UI |
 | `--source` | *(required)* | Source SQL Server DSN |
 | `--target` | *(required unless `--plan`)* | Target SQL Server DSN; non-local targets require an interactive `yes` confirmation |
 | `--plan` | `false` | Print execution plan without modifying target |
@@ -249,6 +284,8 @@ fake-data:
 ```
 
 The CLI validates every configured function and parameter list at startup and fails fast when a function name is unknown, parameters do not fit the selected function, or the function returns a complex value type that the copier cannot safely write to SQL Server.
+
+In TUI mode, the fake-data picker only offers `gofakeit` functions whose output can already be written safely by the copier. Parameterized functions can be selected and configured directly from the TUI.
 
 ### DSN format
 

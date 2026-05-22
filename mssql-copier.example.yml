@@ -26,3 +26,15 @@ fake-data:
   users.name: Name
   email: Email
   name.*: FirstName
+  summary: LoremIpsumSentence;10
+  amount: Price;1;100
+
+# Optional LLM config for TUI fake-data auto-selection.
+# The TUI only shows the auto-select action when this block is present and
+# the referenced API key is available in the environment.
+# The TUI can also export its current form state back into a YAML file.
+# llm:
+#   provider: openai
+#   model: gpt-4o-mini
+#   api-key-env: OPENAI_API_KEY
+#   base-url: https://api.openai.com/v1
