@@ -106,30 +106,30 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 
 	var builder strings.Builder
 	builder.WriteString("# Copy Report\n\n")
-	builder.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&builder, "Generated: %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	builder.WriteString("## Summary\n\n")
 	builder.WriteString("| Metric | Value |\n")
 	builder.WriteString("| --- | ---: |\n")
-	builder.WriteString(fmt.Sprintf("| Selected tables | %d |\n", len(c.tables)))
-	builder.WriteString(fmt.Sprintf("| Total rows copied | %d |\n", totalRows))
-	builder.WriteString(fmt.Sprintf("| Approximate source rows | %d |\n", approxRows))
-	builder.WriteString(fmt.Sprintf("| Bulk tables | %d |\n", bulkTables))
-	builder.WriteString(fmt.Sprintf("| Row-insert tables | %d |\n", rowInsertTables))
-	builder.WriteString(fmt.Sprintf("| Skipped tables | %d |\n", skippedTables))
-	builder.WriteString(fmt.Sprintf("| Zero-row tables | %d |\n", zeroRowTables))
-	builder.WriteString(fmt.Sprintf("| Identity tables | %d |\n", identityTables))
-	builder.WriteString(fmt.Sprintf("| Run duration | %s |\n", runDuration.Round(time.Millisecond)))
+	fmt.Fprintf(&builder, "| Selected tables | %d |\n", len(c.tables))
+	fmt.Fprintf(&builder, "| Total rows copied | %d |\n", totalRows)
+	fmt.Fprintf(&builder, "| Approximate source rows | %d |\n", approxRows)
+	fmt.Fprintf(&builder, "| Bulk tables | %d |\n", bulkTables)
+	fmt.Fprintf(&builder, "| Row-insert tables | %d |\n", rowInsertTables)
+	fmt.Fprintf(&builder, "| Skipped tables | %d |\n", skippedTables)
+	fmt.Fprintf(&builder, "| Zero-row tables | %d |\n", zeroRowTables)
+	fmt.Fprintf(&builder, "| Identity tables | %d |\n", identityTables)
+	fmt.Fprintf(&builder, "| Run duration | %s |\n", runDuration.Round(time.Millisecond))
 
 	builder.WriteString("\n## Highlights\n\n")
 	if largest.table != "" {
-		builder.WriteString(fmt.Sprintf("- Largest copied table: %s with %d rows\n", largest.table, largest.rows))
+		fmt.Fprintf(&builder, "- Largest copied table: %s with %d rows\n", largest.table, largest.rows)
 	}
-	builder.WriteString(fmt.Sprintf("- Estimate delta: %d actual rows versus %d approximate source rows\n", totalRows, approxRows))
+	fmt.Fprintf(&builder, "- Estimate delta: %d actual rows versus %d approximate source rows\n", totalRows, approxRows)
 	if skippedTables > 0 {
-		builder.WriteString(fmt.Sprintf("- %d selected table(s) had no copyable columns and were skipped during data copy\n", skippedTables))
+		fmt.Fprintf(&builder, "- %d selected table(s) had no copyable columns and were skipped during data copy\n", skippedTables)
 	}
 	if rowInsertTables > 0 {
-		builder.WriteString(fmt.Sprintf("- %d table(s) used row inserts instead of bulk copy\n", rowInsertTables))
+		fmt.Fprintf(&builder, "- %d table(s) used row inserts instead of bulk copy\n", rowInsertTables)
 	}
 
 	builder.WriteString("\n## Tables\n\n")
@@ -139,11 +139,11 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 		builder.WriteString("| ")
 		builder.WriteString(report.Table)
 		builder.WriteString(" | ")
-		builder.WriteString(fmt.Sprintf("%d", report.RowsCopied))
+		fmt.Fprintf(&builder, "%d", report.RowsCopied)
 		builder.WriteString(" | ")
-		builder.WriteString(fmt.Sprintf("%d", report.ApproxRows))
+		fmt.Fprintf(&builder, "%d", report.ApproxRows)
 		builder.WriteString(" | ")
-		builder.WriteString(fmt.Sprintf("%d/%d", report.CopyableColumns, report.TotalColumns))
+		fmt.Fprintf(&builder, "%d/%d", report.CopyableColumns, report.TotalColumns)
 		builder.WriteString(" | ")
 		builder.WriteString(report.Mode)
 		builder.WriteString(" | ")

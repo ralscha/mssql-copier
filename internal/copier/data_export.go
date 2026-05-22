@@ -159,7 +159,7 @@ func (c *copier) fetchParentRowsForExport(ctx context.Context, table tableMeta, 
 		whereParts = append(whereParts, "("+strings.Join(predicates, " AND ")+")")
 	}
 
-	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s", joinQuotedColumns(table.CopyColumns), table.FQTN(), strings.Join(whereParts, " OR "))
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s", joinQuotedColumns(table.CopyColumns), table.FQTN(), strings.Join(whereParts, " OR ")) //nolint:gosec // columns and table name are quoted; WHERE predicates use parameterized placeholders
 	if orderBy := tableExportOrderBy(table); orderBy != "" {
 		query += " ORDER BY " + orderBy
 	}

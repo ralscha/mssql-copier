@@ -701,11 +701,12 @@ func (m tuiModel) updateFakerParams(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) fakerParamsView() string {
-	rows := []string{
+	rows := make([]string, 0, 3+len(m.paramOption.Params)+2)
+	rows = append(rows,
 		fmt.Sprintf("Configure parameters for %s (%s).", m.paramOption.Display, m.paramOption.LookupName),
 		"Enter semicolon-separated parameter values in declared order, then press enter to validate and save.",
 		"",
-	}
+	)
 	for _, param := range m.paramOption.Params {
 		line := fmt.Sprintf("- %s [%s]", param.Field, param.Type)
 		if param.Optional {
