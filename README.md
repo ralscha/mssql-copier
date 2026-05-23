@@ -194,12 +194,6 @@ llm:
   base-url: https://api.openai.com/v1
 ```
 
-### Startup options
-
-| Option | Default | Description |
-|------|---------|-------------|
-| `--config` | `mssql-copier.yml` | Path to the YAML file loaded before the TUI opens; optional when using the default path |
-
 ### Fake data replacement
 
 Configured fake-data rules are applied in both copy mode and `ddl+data` mode before values are written to the target or serialized into SQL inserts.
