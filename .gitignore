@@ -1,3 +1,4 @@
 *.exe
 mssql-copier.yml
 logs/
+.mssql-copier
