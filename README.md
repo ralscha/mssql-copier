@@ -26,25 +26,6 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
 - **Integration tested** — includes testcontainers-based integration tests
 
-## Installation
-
-```sh
-go install ./cmd/mssql-copier
-```
-
-Or build from source:
-
-```sh
-go build -o mssql-copier ./cmd/mssql-copier
-```
-
-## Project layout
-
-```text
-cmd/mssql-copier/   binary entrypoint
-internal/copier/    copier engine, SQL metadata logic, and tests
-```
-
 ## Usage
 
 Launch the application with:
@@ -59,13 +40,13 @@ To start from a specific YAML file:
 mssql-copier --config ./config/prod.yml
 ```
 
-The application always opens the TUI. The TUI lets you enter source and target SQL Server connection parameters as separate fields such as server, port, database, user, password, encryption settings, and extra driver options. It also lets you adjust filters, report/export paths, Docker target settings, fake-data rules, and export the current state back into a YAML config file.
+The TUI lets you enter source and target SQL Server connection parameters as separate fields such as server, port, database, user, password, encryption settings, and extra driver options. It also lets you adjust filters, report/export paths, Docker target settings, fake-data rules, and export the current state back into a YAML config file.
 
 When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the app asks for an explicit `yes` before it opens the target connection.
 
 If the target DSN names a database that does not exist yet, the copier first connects to `master` on that same SQL Server instance and creates the database automatically before it opens the target connection.
 
-The form supports four run modes: `copy`, `plan`, `ddl`, and `ddl+data`. As you switch modes, the TUI hides fields that are not editable or not used in that mode. For example, target settings and report output are copy-only, `drop-existing` is shown only for `copy` and `plan`, and data export options are shown only in `ddl+data`. When target type is `local`, the TUI only accepts loopback target addresses such as `localhost`, `127.0.0.1`, or `::1`.
+The form supports four run modes: `copy`, `plan`, `ddl`, and `ddl+data`. When target type is `local`, the TUI only accepts loopback target addresses such as `localhost`, `127.0.0.1`, or `::1`.
 
 Inside the fake-data editor, the TUI shows copyable source columns and lets you assign exact `schema.table.column` faker rules from the supported `gofakeit` catalog. Functions with parameters can be configured directly in the TUI using semicolon-separated argument values in declared order. When an `llm` config is present and usable, the editor also exposes an auto-select action that asks the configured model to pre-fill faker choices for likely sensitive columns. Fake-data editing is available in `copy` and `ddl+data` modes.
 
