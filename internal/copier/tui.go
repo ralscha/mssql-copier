@@ -289,6 +289,23 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Action finished."
 		}
 		return m, nil
+	case tea.PasteMsg:
+		if m.quitting {
+			return m, nil
+		}
+		switch m.screen {
+		case tuiScreenForm:
+			if m.isFormFieldTextInput(m.formFocus) {
+				m.appendFormText(msg.Content)
+			}
+		case tuiScreenFakerPicker:
+			m.pickerQuery += msg.Content
+			m.pickerCursor = 0
+			m.pickerOffset = 0
+		case tuiScreenFakerParams:
+			m.paramInput += msg.Content
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.quitting {
 			return m, nil
@@ -527,10 +544,10 @@ func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitting = true
 		return m, tea.Quit
-	case "tab", "down", "j":
+	case "tab", "down":
 		m.formFocus = m.nextFormField()
 		return m, nil
-	case "shift+tab", "up", "k":
+	case "shift+tab", "up":
 		m.formFocus = m.prevFormField()
 		return m, nil
 	case "enter":
@@ -544,6 +561,18 @@ func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.appendFormText(msg.Key().Text)
 	}
 	return m, nil
+}
+
+func (m tuiModel) isFormFieldTextInput(field int) bool {
+	switch field {
+	case formFieldRunMode, formFieldTargetType,
+		formFieldDockerPersistent, formFieldDockerPassword,
+		formFieldVerbose, formFieldDropExisting,
+		formFieldEditFakeData, formFieldExportConfig, formFieldStartCopy:
+		return false
+	default:
+		return true
+	}
 }
 
 func (m tuiModel) isFormFieldVisible(field int) bool {
@@ -957,11 +986,11 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "q", "esc":
 		return m, m.leaveFakeDataEditor(true)
-	case "down", "j":
+	case "down":
 		if m.fakeDataCursor < count-1 {
 			m.fakeDataCursor++
 		}
-	case "up", "k":
+	case "up":
 		if m.fakeDataCursor > 0 {
 			m.fakeDataCursor--
 		}
@@ -1070,11 +1099,11 @@ func (m tuiModel) updateFakerPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.screen = tuiScreenFakeData
 		m.status = "Canceled faker selection."
 		return m, nil
-	case "down", "j":
+	case "down":
 		if m.pickerCursor < len(filtered)-1 {
 			m.pickerCursor++
 		}
-	case "up", "k":
+	case "up":
 		if m.pickerCursor > 0 {
 			m.pickerCursor--
 		}
