@@ -985,7 +985,8 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "q", "esc":
-		return m, m.leaveFakeDataEditor(true)
+		m.leaveFakeDataEditor()
+		return m, nil
 	case "down":
 		if m.fakeDataCursor < count-1 {
 			m.fakeDataCursor++
@@ -1020,7 +1021,8 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = "Requesting faker suggestions from the configured LLM..."
 		return m, autoSelectFakeDataCmd(m.cfg.LLM, m.fakeDataEntries, m.fakeFunctions)
 	case "s":
-		return m, m.leaveFakeDataEditor(false)
+		m.leaveFakeDataEditor()
+		return m, nil
 	}
 
 	m.adjustFakeDataOffset()
@@ -1034,15 +1036,10 @@ func errString(err error, fallback string) string {
 	return err.Error()
 }
 
-func (m *tuiModel) leaveFakeDataEditor(viaEscape bool) tea.Cmd {
+func (m *tuiModel) leaveFakeDataEditor() {
 	m.syncFakeDataIntoConfig()
 	m.screen = tuiScreenForm
-	action := "Saved"
-	if viaEscape {
-		action = "Saved"
-	}
-	m.status = fmt.Sprintf("%s %d exact fake-data rules. Writing YAML config...", action, countExactFullFakeDataRules(m.cfg.FakeData))
-	return exportConfigCmd(m.cfg)
+	m.status = fmt.Sprintf("Saved %d exact fake-data rules.", countExactFullFakeDataRules(m.cfg.FakeData))
 }
 
 func (m tuiModel) fakeDataView() string {

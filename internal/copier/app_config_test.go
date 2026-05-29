@@ -120,6 +120,82 @@ func TestWritePersistedConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWritePersistedConfigStripsPassword(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "exported.yml")
+
+	cfg := config{
+		ConfigPath: path,
+		SourceDSN:  "sqlserver://sa:secret123@db.example.com:1433?database=MyDB&encrypt=true",
+		TargetDSN:  "server=target.example.com;user id=sa;password=hunter2;database=TargetDB",
+		Workers:    2,
+		BatchSize:  5000,
+	}
+
+	if err := writePersistedConfig(path, cfg); err != nil {
+		t.Fatalf("writePersistedConfig() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read exported config: %v", err)
+	}
+	content := string(raw)
+	if strings.Contains(content, "secret123") {
+		t.Fatal("exported config contains source password")
+	}
+	if strings.Contains(content, "hunter2") {
+		t.Fatal("exported config contains target password")
+	}
+}
+
+func TestStripDSNPassword(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{
+			name: "url dsn with password",
+			dsn:  "sqlserver://sa:secret@db.example.com:1433?database=MyDB",
+			want: "sqlserver://sa@db.example.com:1433?database=MyDB",
+		},
+		{
+			name: "url dsn without password",
+			dsn:  "sqlserver://sa@db.example.com?database=MyDB",
+			want: "sqlserver://sa@db.example.com?database=MyDB",
+		},
+		{
+			name: "key-value dsn with password",
+			dsn:  "server=db.example.com;user id=sa;password=mypass;database=MyDB",
+			want: "server=db.example.com;database=MyDB;user id=sa",
+		},
+		{
+			name: "key-value dsn without password",
+			dsn:  "server=db.example.com;database=MyDB",
+			want: "server=db.example.com;database=MyDB",
+		},
+		{
+			name: "empty dsn",
+			dsn:  "",
+			want: "",
+		},
+		{
+			name: "whitespace only",
+			dsn:  "  ",
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripDSNPassword(tc.dsn)
+			if got != tc.want {
+				t.Fatalf("stripDSNPassword(%q) = %q, want %q", tc.dsn, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSameSourceAndTargetDatabase(t *testing.T) {
 	same := []struct {
 		name string

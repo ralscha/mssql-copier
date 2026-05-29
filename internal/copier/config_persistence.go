@@ -3,6 +3,7 @@ package copier
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"strings"
 
@@ -54,8 +55,8 @@ func writePersistedConfig(path string, cfg config) error {
 
 func persistedConfigFromConfig(cfg config) persistedYAMLConfig {
 	return persistedYAMLConfig{
-		SourceDSN:      strings.TrimSpace(cfg.SourceDSN),
-		TargetDSN:      strings.TrimSpace(cfg.TargetDSN),
+		SourceDSN:      stripDSNPassword(strings.TrimSpace(cfg.SourceDSN)),
+		TargetDSN:      stripDSNPassword(strings.TrimSpace(cfg.TargetDSN)),
 		ReportMDFile:   strings.TrimSpace(cfg.ReportMDFile),
 		Workers:        max(1, cfg.Workers),
 		BatchSize:      max(1, cfg.BatchSize),
@@ -112,4 +113,47 @@ func cloneStringMap(values map[string]string) map[string]string {
 	cloned := make(map[string]string, len(values))
 	maps.Copy(cloned, values)
 	return cloned
+}
+
+func stripDSNPassword(dsn string) string {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return dsn
+	}
+	form := parseSQLServerDSNForm(dsn)
+	if form.Password == "" {
+		return dsn
+	}
+	// Preserve the original format: URL-style or key-value.
+	if looksLikeSQLServerURL(dsn) {
+		return stripURLPassword(dsn)
+	}
+	form.Password = ""
+	stripped, err := buildSQLServerDSN(form)
+	if err != nil || stripped == "" {
+		return dsn
+	}
+	return stripped
+}
+
+func looksLikeSQLServerURL(dsn string) bool {
+	u, err := url.Parse(dsn)
+	return err == nil && u.Scheme != "" && u.Host != ""
+}
+
+func stripURLPassword(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		return dsn
+	}
+	if u.User == nil {
+		return dsn
+	}
+	username := u.User.Username()
+	if username == "" {
+		u.User = nil
+	} else {
+		u.User = url.User(username)
+	}
+	return u.String()
 }

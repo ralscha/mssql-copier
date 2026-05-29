@@ -32,7 +32,6 @@ func TestFormAllowsEnteringQIntoTextField(t *testing.T) {
 
 func TestLeaveFakeDataEditorPersistsMappings(t *testing.T) {
 	tmp := t.TempDir()
-	path := filepath.Join(tmp, "mssql-copier.yml")
 	previousExecutablePath := executablePath
 	executablePath = func() (string, error) {
 		return filepath.Join(tmp, "bin", "mssql-copier.exe"), nil
@@ -42,7 +41,7 @@ func TestLeaveFakeDataEditorPersistsMappings(t *testing.T) {
 	}()
 
 	model := newTUIModel(config{
-		ConfigPath: path,
+		ConfigPath: filepath.Join(tmp, "mssql-copier.yml"),
 		SourceDSN:  "sqlserver://source",
 		Workers:    2,
 		BatchSize:  5000,
@@ -60,7 +59,7 @@ func TestLeaveFakeDataEditorPersistsMappings(t *testing.T) {
 		FunctionDisplay: "Email",
 	}}
 
-	cmd := model.leaveFakeDataEditor(false)
+	model.leaveFakeDataEditor()
 	if model.screen != tuiScreenForm {
 		t.Fatalf("screen = %v, want form", model.screen)
 	}
@@ -69,32 +68,6 @@ func TestLeaveFakeDataEditorPersistsMappings(t *testing.T) {
 	}
 	if got := model.cfg.FakeData["name.*"]; got != "FirstName" {
 		t.Fatalf("fake-data preserved mapping = %q, want FirstName", got)
-	}
-	if cmd == nil {
-		t.Fatal("leaveFakeDataEditor() returned nil cmd")
-	}
-
-	msg := cmd()
-	exported, ok := msg.(configExportedMsg)
-	if !ok {
-		t.Fatalf("cmd() message type = %T, want configExportedMsg", msg)
-	}
-	if exported.err != nil {
-		t.Fatalf("config export error = %v", exported.err)
-	}
-
-	yamlCfg, loaded, err := loadYAMLConfig(path, true)
-	if err != nil {
-		t.Fatalf("loadYAMLConfig() error = %v", err)
-	}
-	if !loaded {
-		t.Fatal("expected persisted config to load")
-	}
-
-	var got config
-	yamlCfg.applyTo(&got)
-	if got.FakeData != nil {
-		t.Fatalf("fake-data should not be exported to YAML, got %#v", got.FakeData)
 	}
 
 	cached, found, err := loadCachedFakeDataMappings("sqlserver://source")
