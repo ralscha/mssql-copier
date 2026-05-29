@@ -298,6 +298,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isFormFieldTextInput(m.formFocus) {
 				m.appendFormText(msg.Content)
 			}
+		case tuiScreenLoadingFakeData, tuiScreenFakeData, tuiScreenAutoSelecting:
 		case tuiScreenFakerPicker:
 			m.pickerQuery += msg.Content
 			m.pickerCursor = 0
@@ -1327,11 +1328,11 @@ func executeTUIExecution(configs []config, logPath string) tea.Msg {
 	tuiExecutionMu.Lock()
 	defer tuiExecutionMu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return executionFinishedMsg{logPath: logPath, err: fmt.Errorf("create log dir: %w", err)}
 	}
 
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	logFile, err := os.OpenFile(filepath.Clean(logPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return executionFinishedMsg{logPath: logPath, err: fmt.Errorf("open log file: %w", err)}
 	}
