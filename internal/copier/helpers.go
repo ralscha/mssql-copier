@@ -3,9 +3,38 @@ package copier
 import (
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
+
+func parseBCPErrorColID(errMsg string) int {
+	re := regexp.MustCompile(`colid\s+(\d+)`)
+	m := re.FindStringSubmatch(errMsg)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+func enrichBCPError(table tableMeta, err error) error {
+	if err == nil {
+		return nil
+	}
+	colid := parseBCPErrorColID(err.Error())
+	if colid == 0 {
+		return fmt.Errorf("flush bulk %s: %w", table.FQTN(), err)
+	}
+	idx := colid - 1
+	if idx >= 0 && idx < len(table.CopyColumns) {
+		col := table.CopyColumns[idx]
+		return fmt.Errorf("flush bulk %s: %w (colid %d = column %s, type=%s, maxLen=%d, precision=%d, scale=%d, nullable=%v)",
+			table.FQTN(), err, colid, col.Name, col.SystemTypeName, col.MaxLength, col.Precision, col.Scale, col.Nullable)
+	}
+	return fmt.Errorf("flush bulk %s: %w (colid %d, but only %d copy columns)", table.FQTN(), err, colid, len(table.CopyColumns))
+}
 
 type closeable interface {
 	Close() error

@@ -337,11 +337,11 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 
 	values := make([]any, len(table.CopyColumns))
 	scanDest := make([]any, len(table.CopyColumns))
-	var rowsCopied int64
 	for i := range values {
 		scanDest[i] = &values[i]
 	}
 
+	var rowsCopied int64
 	for rows.Next() {
 		if err := rows.Scan(scanDest...); err != nil {
 			return 0, fmt.Errorf("scan %s: %w", table.FQTN(), err)
@@ -364,7 +364,9 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 
 	if table.BulkOK {
 		if _, err := stmt.ExecContext(ctx); err != nil {
-			return 0, fmt.Errorf("flush bulk %s: %w", table.FQTN(), err)
+			enrichedErr := enrichBCPError(table, err)
+			log.Printf("BCP flush failed for %s, falling back to row-by-row inserts: %v", table.FQTN(), enrichedErr)
+			return c.fallbackCopyRowByRow(ctx, table, started)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -372,6 +374,105 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 	}
 	c.report.record(table, rowsCopied, time.Since(started))
 	return rowsCopied, nil
+}
+
+func (c *copier) fallbackCopyRowByRow(ctx context.Context, table tableMeta, started time.Time) (int64, error) {
+	sourceConn, err := c.sourceDB.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fallback source conn %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(sourceConn, "fallback source connection")
+
+	targetConn, err := c.targetDB.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fallback target conn %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(targetConn, "fallback target connection")
+
+	query := selectTableCopySQL(table)
+	rows, err := sourceConn.QueryContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("fallback query %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(rows, "fallback source rows")
+
+	tx, err := targetConn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("fallback begin tx %s: %w", table.FQTN(), err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if table.HasIdentity {
+		if _, err := targetConn.ExecContext(ctx, fmt.Sprintf("SET IDENTITY_INSERT %s ON", table.FQTN())); err != nil {
+			return 0, fmt.Errorf("fallback identity insert on %s: %w", table.FQTN(), err)
+		}
+		defer func() {
+			_, _ = targetConn.ExecContext(context.Background(), fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table.FQTN()))
+		}()
+	}
+
+	insertSQL := insertTableCopySQL(table)
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return 0, fmt.Errorf("fallback prepare insert %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(stmt, "fallback insert statement")
+
+	values := make([]any, len(table.CopyColumns))
+	scanDest := make([]any, len(table.CopyColumns))
+	for i := range values {
+		scanDest[i] = &values[i]
+	}
+
+	var rowsCopied int64
+	for rows.Next() {
+		if err := rows.Scan(scanDest...); err != nil {
+			return 0, fmt.Errorf("fallback scan %s: %w", table.FQTN(), err)
+		}
+		params := make([]any, len(table.CopyColumns))
+		for i, col := range table.CopyColumns {
+			params[i], err = c.replaceValue(table, col, values[i])
+			if err != nil {
+				return 0, err
+			}
+		}
+		if _, err := stmt.ExecContext(ctx, params...); err != nil {
+			for i, col := range table.CopyColumns {
+				log.Printf("fallback %s row %d col[%d] %s (%s) = %#v", table.FQTN(), rowsCopied+1, i, col.Name, col.SystemTypeName, truncateForLog(params[i]))
+			}
+			return 0, fmt.Errorf("fallback insert row %d in %s: %w", rowsCopied+1, table.FQTN(), err)
+		}
+		rowsCopied++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("fallback iterate %s: %w", table.FQTN(), err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("fallback commit %s: %w", table.FQTN(), err)
+	}
+	c.report.record(table, rowsCopied, time.Since(started))
+	log.Printf("fallback row-by-row copy succeeded for %s rows=%d", table.FQTN(), rowsCopied)
+	return rowsCopied, nil
+}
+
+func truncateForLog(v any) any {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case []byte:
+		if len(val) > 200 {
+			return fmt.Sprintf("%s...(%d bytes total)", string(val[:200]), len(val))
+		}
+		return string(val)
+	case string:
+		if len(val) > 200 {
+			return val[:200] + fmt.Sprintf("...(%d chars total)", len(val))
+		}
+		return val
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func (c *copier) createPostDataObjects(ctx context.Context) error {
