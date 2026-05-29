@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -221,5 +222,180 @@ func TestDDLModeFormViewShowsCompleteActionLabel(t *testing.T) {
 	view := model.formView()
 	if !strings.Contains(view, "> [ Export DDL ]") {
 		t.Fatalf("formView() missing DDL action label: %q", view)
+	}
+}
+
+func TestLogTailLoadsFromCurrentLogPath(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "logs", "test.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("line 1\nline 2\nline 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newTUIModel(config{})
+	model.currentLogPath = logPath
+	model.loadLogTail()
+
+	if len(model.logTailLines) != 3 {
+		t.Fatalf("logTailLines length = %d, want 3", len(model.logTailLines))
+	}
+	if model.logTailLines[0] != "line 1" {
+		t.Fatalf("logTailLines[0] = %q, want line 1", model.logTailLines[0])
+	}
+}
+
+func TestLogTailFallsBackToRecentLogPath(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "logs", "recent.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("recent content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newTUIModel(config{})
+	model.currentLogPath = ""
+	model.recentLogPaths = []string{logPath}
+	model.loadLogTail()
+
+	if len(model.logTailLines) != 1 {
+		t.Fatalf("logTailLines length = %d, want 1", len(model.logTailLines))
+	}
+	if model.logTailLines[0] != "recent content" {
+		t.Fatalf("logTailLines[0] = %q, want recent content", model.logTailLines[0])
+	}
+}
+
+func TestLogTailEmptyWhenNoLogPath(t *testing.T) {
+	model := newTUIModel(config{})
+	model.currentLogPath = ""
+	model.recentLogPaths = nil
+	model.loadLogTail()
+
+	if model.logTailLines != nil {
+		t.Fatalf("logTailLines = %#v, want nil", model.logTailLines)
+	}
+}
+
+func TestLogTailViewShowsContent(t *testing.T) {
+	model := newTUIModel(config{})
+	model.width = 80
+	model.height = 50
+	model.logTailLines = []string{"log line one", "log line two"}
+	model.logTailScroll = 0
+
+	view := model.logTailView()
+	if !strings.Contains(view, "log line one") {
+		t.Fatalf("logTailView() missing log content: %q", view)
+	}
+	if !strings.Contains(view, "Log tail") {
+		t.Fatalf("logTailView() missing header: %q", view)
+	}
+}
+
+func TestLogTailScrolling(t *testing.T) {
+	model := newTUIModel(config{})
+	model.height = 50
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = "line " + strconv.Itoa(i)
+	}
+	model.logTailLines = lines
+	model.logTailScroll = 0
+
+	model.scrollLogTail(5)
+	if model.logTailScroll != 5 {
+		t.Fatalf("logTailScroll = %d, want 5", model.logTailScroll)
+	}
+
+	model.scrollLogTail(-3)
+	if model.logTailScroll != 2 {
+		t.Fatalf("logTailScroll = %d, want 2", model.logTailScroll)
+	}
+
+	// Scroll past end should clamp.
+	model.logTailScroll = 95
+	model.scrollLogTail(20)
+	visible := model.visibleLogTailRows()
+	maxScroll := max(0, len(model.logTailLines)-visible)
+	if model.logTailScroll != maxScroll {
+		t.Fatalf("logTailScroll = %d, want maxScroll %d", model.logTailScroll, maxScroll)
+	}
+}
+
+func TestLogPanelFocusTogglesWithCtrlL(t *testing.T) {
+	model := newTUIModel(config{})
+	model.screen = tuiScreenForm
+
+	if model.logPanelFocused {
+		t.Fatal("log panel should not be focused initially")
+	}
+
+	updated, _ := model.updateForm(tea.KeyPressMsg(tea.Key{Text: "ctrl+l"}))
+	got, ok := updated.(tuiModel)
+	if !ok {
+		t.Fatalf("updateForm() model type = %T, want tuiModel", updated)
+	}
+	if !got.logPanelFocused {
+		t.Fatal("ctrl+l did not focus log panel")
+	}
+
+	// Esc in log panel focus returns to form.
+	updated2, _ := got.updateLogPanelFocus(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	got2, ok := updated2.(tuiModel)
+	if !ok {
+		t.Fatalf("updateLogPanelFocus() model type = %T, want tuiModel", updated2)
+	}
+	if got2.logPanelFocused {
+		t.Fatal("esc did not defocus log panel")
+	}
+}
+
+func TestFormViewIncludesLogTail(t *testing.T) {
+	model := newTUIModel(config{})
+	model.width = 80
+	model.height = 50
+	model.logTailLines = []string{"sample log output"}
+	model.screen = tuiScreenForm
+
+	view := model.formView()
+	if !strings.Contains(view, "Log tail") {
+		t.Fatalf("formView() missing log tail panel: %q", view)
+	}
+	if !strings.Contains(view, "sample log output") {
+		t.Fatalf("formView() missing log content: %q", view)
+	}
+}
+
+func TestExecutionFinishedLoadsLogTail(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "logs", "exec-finished.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("execution completed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newTUIModel(config{})
+	model.runInProgress = true
+	model.currentLogPath = logPath
+	model.screen = tuiScreenForm
+
+	msg := executionFinishedMsg{logPath: logPath}
+	updated, _ := model.Update(msg)
+	got, ok := updated.(tuiModel)
+	if !ok {
+		t.Fatalf("Update() model type = %T, want tuiModel", updated)
+	}
+	if got.runInProgress {
+		t.Fatal("runInProgress stayed true after execution finished")
+	}
+	if len(got.logTailLines) != 1 || got.logTailLines[0] != "execution completed" {
+		t.Fatalf("logTailLines = %#v, want [execution completed]", got.logTailLines)
 	}
 }

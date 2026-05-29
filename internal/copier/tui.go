@@ -166,6 +166,9 @@ type tuiModel struct {
 	currentLogPath    string
 	recentLogPaths    []string
 	quitting          bool
+	logTailLines      []string
+	logTailScroll     int
+	logPanelFocused   bool
 }
 
 func runTUI(cfg config) error {
@@ -276,6 +279,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case executionFinishedMsg:
 		m.runInProgress = false
 		m.recentLogPaths = listRecentTUILogPaths(m.form.ExportPath, 5)
+		m.loadLogTail()
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Action failed. See log: %s", msg.logPath)
 			if strings.TrimSpace(msg.logPath) == "" {
@@ -450,13 +454,15 @@ func (m tuiModel) formView() string {
 
 	sections := []string{
 		"Enter source settings, choose a run mode, and then adjust only the settings used by that mode.",
-		"Keys: type to edit, backspace deletes, up/down or tab moves, enter toggles/actions, ctrl+c quits.",
+		"Keys: type to edit, backspace deletes, up/down or tab moves, enter toggles/actions, ctrl+c quits, ctrl+l focuses log panel.",
 		"",
 		strings.Join(visibleRows, "\n"),
 		"",
 		m.executionView(),
 		"",
 		m.logFilesView(),
+		"",
+		m.logTailView(),
 	}
 	return strings.Join(sections, "\n")
 }
@@ -512,6 +518,136 @@ func (m tuiModel) visibleLogPaths() []string {
 	return paths
 }
 
+func (m *tuiModel) loadLogTail() {
+	path := m.bestLogPathForTail()
+	if path == "" {
+		m.logTailLines = nil
+		m.logTailScroll = 0
+		return
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		m.logTailLines = []string{fmt.Sprintf("(cannot read log: %v)", err)}
+		m.logTailScroll = 0
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	// Trim trailing empty line from split.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	m.logTailLines = lines
+	m.logTailScroll = 0
+}
+
+func (m tuiModel) bestLogPathForTail() string {
+	if current := strings.TrimSpace(m.currentLogPath); current != "" {
+		return current
+	}
+	if len(m.recentLogPaths) > 0 {
+		return strings.TrimSpace(m.recentLogPaths[0])
+	}
+	return ""
+}
+
+func (m *tuiModel) scrollLogTail(delta int) {
+	if len(m.logTailLines) == 0 {
+		return
+	}
+	m.logTailScroll += delta
+	m.clampLogTailScroll()
+}
+
+func (m *tuiModel) clampLogTailScroll() {
+	if len(m.logTailLines) == 0 {
+		m.logTailScroll = 0
+		return
+	}
+	visible := m.visibleLogTailRows()
+	maxScroll := max(0, len(m.logTailLines)-visible)
+	if m.logTailScroll > maxScroll {
+		m.logTailScroll = maxScroll
+	}
+	if m.logTailScroll < 0 {
+		m.logTailScroll = 0
+	}
+}
+
+func (m tuiModel) visibleLogTailRows() int {
+	// Reserve at least 3 lines for the panel header and border, plus 2 for bottom margin.
+	return max(3, m.height-m.configLinesEstimate()-5)
+}
+
+func (m tuiModel) configLinesEstimate() int {
+	// Rough estimate: header (2) + instructions (2) + blank (1) + fields (~30 visible fields) + blank (1) + execution (4) + blank (1) + log files (3)
+	visibleFields := 0
+	allFields := []int{
+		formFieldSourceServer, formFieldSourcePort, formFieldSourceDatabase,
+		formFieldSourceUser, formFieldSourcePassword, formFieldSourceEncrypt,
+		formFieldSourceTrustCert, formFieldSourceOptions,
+		formFieldRunMode,
+		formFieldTargetType,
+		formFieldTargetServer, formFieldTargetPort, formFieldTargetDatabase,
+		formFieldTargetUser, formFieldTargetPassword, formFieldTargetEncrypt,
+		formFieldTargetTrustCert, formFieldTargetOptions,
+		formFieldDockerDir, formFieldDockerPort, formFieldDockerPersistent, formFieldDockerPassword,
+		formFieldWorkers, formFieldBatchSize, formFieldVerbose,
+		formFieldDropExisting,
+		formFieldIncludeSchemas, formFieldExcludeSchemas,
+		formFieldIncludeTables, formFieldExcludeTables,
+		formFieldExportDDLPath, formFieldExportDataPath, formFieldExportDataRows,
+		formFieldReportPath, formFieldExportPath,
+		formFieldEditFakeData, formFieldExportConfig, formFieldStartCopy,
+	}
+	for _, field := range allFields {
+		if m.isFormFieldVisible(field) {
+			visibleFields++
+		}
+	}
+	// Header + instructions + blank lines + fields + execution section + log files section
+	return 2 + 2 + 1 + visibleFields + 1 + 4 + 1 + 3
+}
+
+func (m tuiModel) logTailView() string {
+	var builder strings.Builder
+	builder.WriteString(strings.Repeat("─", max(1, m.width-2)))
+	builder.WriteString("\n")
+
+	if m.logPanelFocused {
+		builder.WriteString("▶ Log tail (scroll with arrows / pgup / pgdn, esc to return to config)")
+	} else {
+		builder.WriteString("  Log tail (press ctrl+l to focus)")
+	}
+	if path := m.bestLogPathForTail(); path != "" {
+		builder.WriteString(" — ")
+		builder.WriteString(filepath.Base(path))
+	}
+	builder.WriteString("\n")
+	builder.WriteString(strings.Repeat("─", max(1, m.width-2)))
+	builder.WriteString("\n")
+
+	if len(m.logTailLines) == 0 {
+		builder.WriteString("  No log content yet. Start an action to see output here.\n")
+		return builder.String()
+	}
+
+	visible := m.visibleLogTailRows()
+	start := m.logTailScroll
+	end := min(len(m.logTailLines), start+visible)
+	for i := start; i < end; i++ {
+		line := m.logTailLines[i]
+		// Truncate lines that are too wide.
+		maxLineWidth := max(1, m.width-2)
+		if len(line) > maxLineWidth {
+			line = line[:maxLineWidth]
+		}
+		builder.WriteString(" ")
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
 func (m tuiModel) formTextRow(index int, label string, value string) string {
 	prefix := "  "
 	if m.formFocus == index {
@@ -537,6 +673,10 @@ func (m tuiModel) formActionRow(index int, label string) string {
 }
 
 func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.logPanelFocused {
+		return m.updateLogPanelFocus(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		if m.runInProgress {
@@ -545,6 +685,11 @@ func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitting = true
 		return m, tea.Quit
+	case "ctrl+l":
+		m.logPanelFocused = true
+		m.loadLogTail()
+		m.status = "Log panel focused. Use arrows/pgup/pgdn to scroll, esc to return to config."
+		return m, nil
 	case "tab", "down":
 		m.formFocus = m.nextFormField()
 		return m, nil
@@ -560,6 +705,35 @@ func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if msg.Key().Text != "" {
 		m.appendFormText(msg.Key().Text)
+	}
+	return m, nil
+}
+
+func (m tuiModel) updateLogPanelFocus(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		if m.runInProgress {
+			m.status = "Wait for the current action to finish before quitting."
+			return m, nil
+		}
+		m.quitting = true
+		return m, tea.Quit
+	case "esc", "ctrl+l":
+		m.logPanelFocused = false
+		m.status = "Returned to config form."
+		return m, nil
+	case "up":
+		m.scrollLogTail(-1)
+	case "down":
+		m.scrollLogTail(1)
+	case "pgup":
+		m.scrollLogTail(-max(1, m.visibleLogTailRows()/2))
+	case "pgdown":
+		m.scrollLogTail(max(1, m.visibleLogTailRows()/2))
+	case "home":
+		m.logTailScroll = 0
+	case "end":
+		m.logTailScroll = max(0, len(m.logTailLines)-m.visibleLogTailRows())
 	}
 	return m, nil
 }
