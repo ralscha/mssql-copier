@@ -509,12 +509,17 @@ func (c *copier) createPostDataObjects(ctx context.Context) error {
 				log.Printf("skipping foreign key %s.%s because referenced table [%s].[%s] does not exist on target", table.FQTN(), fk.Name, fk.RefSchema, fk.RefTable)
 				continue
 			}
-			if _, err := c.targetDB.ExecContext(ctx, table.ForeignKeySQL(fk)); err != nil {
+
+			nocreateSQL := table.ForeignKeySQLNOCHECK(fk)
+			if _, err := c.targetDB.ExecContext(ctx, nocreateSQL); err != nil {
 				return fmt.Errorf("create foreign key %s.%s: %w", table.FQTN(), fk.Name, err)
 			}
 			if fk.Disabled {
-				if _, err := c.targetDB.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s NOCHECK CONSTRAINT %s", table.FQTN(), quoteIdent(fk.Name))); err != nil {
-					return fmt.Errorf("disable foreign key %s.%s: %w", table.FQTN(), fk.Name, err)
+				// Already NOCHECK, nothing more to do.
+			} else if fk.Trusted {
+				enableSQL := fmt.Sprintf("ALTER TABLE %s WITH CHECK CHECK CONSTRAINT %s;", table.FQTN(), quoteIdent(fk.Name))
+				if _, err := c.targetDB.ExecContext(ctx, enableSQL); err != nil {
+					log.Printf("WARNING: foreign key %s.%s could not be trusted (data may be inconsistent): %v", table.FQTN(), fk.Name, err)
 				}
 			}
 		}

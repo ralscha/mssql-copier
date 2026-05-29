@@ -79,6 +79,29 @@ func (t tableMeta) ForeignKeySQL(fk foreignKey) string {
 	return stmt + ";"
 }
 
+func (t tableMeta) ForeignKeySQLNOCHECK(fk foreignKey) string {
+	var tail []string
+	if action := normalizeReferentialAction(fk.DeleteAction); action != "" {
+		tail = append(tail, "ON DELETE "+action)
+	}
+	if action := normalizeReferentialAction(fk.UpdateAction); action != "" {
+		tail = append(tail, "ON UPDATE "+action)
+	}
+	stmt := fmt.Sprintf(
+		"ALTER TABLE %s WITH NOCHECK ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s.%s (%s)",
+		t.FQTN(),
+		quoteIdent(fk.Name),
+		joinQuotedNames(fk.Columns),
+		quoteIdent(fk.RefSchema),
+		quoteIdent(fk.RefTable),
+		joinQuotedNames(fk.RefColumns),
+	)
+	if len(tail) > 0 {
+		stmt += " " + strings.Join(tail, " ")
+	}
+	return stmt + ";"
+}
+
 func (t tableMeta) IndexSQL(index indexMeta) string {
 	parts := []string{"CREATE"}
 	if index.Unique {
