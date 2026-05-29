@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-type flywayStatement struct {
+const flywayAuthor = "mssql-copier"
+
+type flywayChange struct {
+	id  string
 	sql string
 }
 
@@ -32,28 +35,32 @@ func (c *copier) writeFlywayBaselineFile() error {
 }
 
 func (c *copier) buildFlywayBaselineSQL() (string, error) {
-	statements, err := c.flywayStatements()
+	changes, err := c.flywayChanges()
 	if err != nil {
 		return "", err
 	}
 
 	var builder strings.Builder
-	for index, statement := range statements {
-		if index > 0 {
-			builder.WriteString("\n\n")
-		}
-		builder.WriteString(strings.TrimSpace(statement.sql))
+	for _, change := range changes {
+		builder.WriteString("\n")
+		builder.WriteString("--changeset ")
+		builder.WriteString(flywayAuthor)
+		builder.WriteString(":")
+		builder.WriteString(change.id)
+		builder.WriteString(" splitStatements:false\n")
+		builder.WriteString(strings.TrimSpace(change.sql))
 		builder.WriteString("\n")
 	}
 	return builder.String(), nil
 }
 
-func (c *copier) flywayStatements() ([]flywayStatement, error) {
-	var statements []flywayStatement
+func (c *copier) flywayChanges() ([]flywayChange, error) {
+	var changes []flywayChange
 
 	for _, schema := range c.exportSchemaNames() {
-		statements = append(statements, flywayStatement{
-			sql: fmt.Sprintf(`IF SCHEMA_ID(N'%s') IS NULL EXEC(N'CREATE SCHEMA %s');`, escapeSQLString(schema), quoteIdent(schema)),
+		changes = append(changes, flywayChange{
+			id:  "schema-" + flywayIDPart(schema),
+			sql: fmt.Sprintf(`IF SCHEMA_ID(N'%s') IS NULL EXEC(N'CREATE SCHEMA %s')`, escapeSQLString(schema), quoteIdent(schema)),
 		})
 	}
 
@@ -62,7 +69,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		if err != nil {
 			return nil, err
 		}
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "alias-type-" + flywayIDPart(aliasType.Schema) + "-" + flywayIDPart(aliasType.Name),
 			sql: sqlText,
 		})
 	}
@@ -72,7 +80,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		if err != nil {
 			return nil, err
 		}
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "table-type-" + flywayIDPart(tableType.Schema) + "-" + flywayIDPart(tableType.Name),
 			sql: sqlText,
 		})
 	}
@@ -82,7 +91,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		if err != nil {
 			return nil, err
 		}
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "sequence-" + flywayIDPart(sequence.Schema) + "-" + flywayIDPart(sequence.Name),
 			sql: sqlText,
 		})
 	}
@@ -92,7 +102,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		if err != nil {
 			return nil, err
 		}
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "table-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name),
 			sql: sqlText,
 		})
 	}
@@ -100,7 +111,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 	selectedTables := selectedTableSet(c.tables)
 	for _, table := range c.tables {
 		if table.PrimaryKey != nil {
-			statements = append(statements, flywayStatement{
+			changes = append(changes, flywayChange{
+				id:  "primary-key-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name),
 				sql: table.PrimaryKeySQL(),
 			})
 		}
@@ -109,12 +121,14 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 			if check.Disabled {
 				sqlText += "\n" + fmt.Sprintf("ALTER TABLE %s NOCHECK CONSTRAINT %s;", table.FQTN(), quoteIdent(check.Name))
 			}
-			statements = append(statements, flywayStatement{
+			changes = append(changes, flywayChange{
+				id:  "check-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name) + "-" + flywayIDPart(check.Name),
 				sql: sqlText,
 			})
 		}
 		for _, index := range table.Indexes {
-			statements = append(statements, flywayStatement{
+			changes = append(changes, flywayChange{
+				id:  "index-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name) + "-" + flywayIDPart(index.Name),
 				sql: table.IndexSQL(index),
 			})
 		}
@@ -126,7 +140,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 			if fk.Disabled {
 				sqlText += "\n" + fmt.Sprintf("ALTER TABLE %s NOCHECK CONSTRAINT %s;", table.FQTN(), quoteIdent(fk.Name))
 			}
-			statements = append(statements, flywayStatement{
+			changes = append(changes, flywayChange{
+				id:  "foreign-key-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name) + "-" + flywayIDPart(fk.Name),
 				sql: sqlText,
 			})
 		}
@@ -137,7 +152,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		return nil, fmt.Errorf("view dependency resolution: %w", err)
 	}
 	for _, view := range orderedViews {
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "view-" + flywayIDPart(view.Schema) + "-" + flywayIDPart(view.Name),
 			sql: view.CreateViewSQL(),
 		})
 	}
@@ -147,13 +163,15 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		return nil, fmt.Errorf("function dependency resolution: %w", err)
 	}
 	for _, function := range orderedFunctions {
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "function-" + flywayIDPart(function.Schema) + "-" + flywayIDPart(function.Name),
 			sql: function.CreateFunctionSQL(),
 		})
 	}
 
 	for _, synonym := range c.synonyms {
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "synonym-" + flywayIDPart(synonym.Schema) + "-" + flywayIDPart(synonym.Name),
 			sql: synonym.CreateSynonymSQL(),
 		})
 	}
@@ -163,7 +181,8 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		return nil, fmt.Errorf("procedure dependency resolution: %w", err)
 	}
 	for _, procedure := range orderedProcedures {
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "procedure-" + flywayIDPart(procedure.Schema) + "-" + flywayIDPart(procedure.Name),
 			sql: procedure.CreateProcedureSQL(),
 		})
 	}
@@ -179,12 +198,13 @@ func (c *copier) flywayStatements() ([]flywayStatement, error) {
 		} else {
 			sqlText += "\n" + fmt.Sprintf("ENABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
 		}
-		statements = append(statements, flywayStatement{
+		changes = append(changes, flywayChange{
+			id:  "trigger-" + flywayIDPart(trigger.Schema) + "-" + flywayIDPart(trigger.Name),
 			sql: sqlText,
 		})
 	}
 
-	return statements, nil
+	return changes, nil
 }
 
 func (c *copier) exportSchemaNames() []string {
@@ -234,4 +254,15 @@ func selectedTableSet(tables []tableMeta) map[string]struct{} {
 		selected[strings.ToLower(table.FQTN())] = struct{}{}
 	}
 	return selected
+}
+
+func flywayIDPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer(" ", "-", ".", "-", "[", "", "]", "", "/", "-", `\\`, "-", ":", "-", "'", "", `"`, "")
+	value = replacer.Replace(value)
+	value = strings.Trim(value, "-")
+	if value == "" {
+		return "item"
+	}
+	return value
 }

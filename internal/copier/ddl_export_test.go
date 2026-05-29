@@ -84,7 +84,7 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 	}
 
 	wants := []string{
-		"IF SCHEMA_ID(N'sales') IS NULL EXEC(N'CREATE SCHEMA [sales]');",
+		"IF SCHEMA_ID(N'sales') IS NULL EXEC(N'CREATE SCHEMA [sales]')",
 		"CREATE TYPE [sales].[order_code] FROM nvarchar(12) NOT NULL;",
 		"CREATE TABLE [sales].[customers]",
 		"CREATE TABLE [sales].[orders]",
@@ -102,8 +102,8 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(got, "formatted sql") || strings.Contains(got, "--changeset ") {
-		t.Fatalf("expected plain DDL export without migration-tool markers, got:\n%s", got)
+	if !strings.Contains(got, "--changeset ") {
+		t.Fatalf("expected changeset markers in DDL export, got:\n%s", got)
 	}
 
 	if strings.Contains(got, "FK_orders_external") {
