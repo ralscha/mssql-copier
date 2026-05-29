@@ -2,6 +2,7 @@ package copier
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"slices"
 	"strings"
@@ -310,14 +311,47 @@ func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bo
 
 func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, error) {
 	if c.dataFaker == nil {
-		return normalizeValue(value, col), nil
+		return normalizeValue(truncateToColumnLength(value, col, table), col), nil
 	}
 	replacement, ok, err := c.dataFaker.fakeValue(c.faker, table, col)
 	if err != nil {
 		return nil, fmt.Errorf("generate fake value for %s.%s: %w", table.FQTN(), col.Name, err)
 	}
 	if !ok {
-		return normalizeValue(value, col), nil
+		return normalizeValue(truncateToColumnLength(value, col, table), col), nil
 	}
-	return normalizeValue(replacement, col), nil
+	return normalizeValue(truncateToColumnLength(replacement, col, table), col), nil
+}
+
+func truncateToColumnLength(value any, col columnMeta, table tableMeta) any {
+	if col.MaxLength < 0 || col.MaxLength == 0 {
+		return value
+	}
+	switch v := value.(type) {
+	case string:
+		limit := charLimit(col)
+		if limit > 0 && len(v) > limit {
+			log.Printf("truncating %s.%s from %d to %d characters to fit %s", table.FQTN(), col.Name, len(v), limit, col.SystemTypeName)
+			return v[:limit]
+		}
+	case []byte:
+		if len(v) > col.MaxLength {
+			log.Printf("truncating %s.%s from %d to %d bytes to fit %s", table.FQTN(), col.Name, len(v), col.MaxLength, col.SystemTypeName)
+			result := make([]byte, col.MaxLength)
+			copy(result, v[:col.MaxLength])
+			return result
+		}
+	}
+	return value
+}
+
+func charLimit(col columnMeta) int {
+	switch col.SystemTypeName {
+	case "nvarchar", "nchar", "ntext":
+		return col.MaxLength / 2
+	case "varchar", "char", "text":
+		return col.MaxLength
+	default:
+		return 0
+	}
 }

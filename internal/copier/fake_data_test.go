@@ -169,3 +169,77 @@ func TestReplaceValueFallsBackToOriginalNormalization(t *testing.T) {
 		t.Fatalf("replaceValue() = %#v, want %q", got, "123.45")
 	}
 }
+
+func TestReplaceValueTruncatesLongNvarchar(t *testing.T) {
+	c := &copier{}
+	table := tableMeta{Schema: "event", Name: "Event"}
+	col := columnMeta{Name: "lokalitaet_kanton", SystemTypeName: "nvarchar", MaxLength: 8}
+	got, err := c.replaceValue(table, col, "North Carolina")
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("replaceValue() = %T %#v, want string", got, got)
+	}
+	// nvarchar(8 bytes) = 4 characters max
+	if s != "Nort" {
+		t.Fatalf("replaceValue() = %q, want %q", s, "Nort")
+	}
+}
+
+func TestReplaceValueDoesNotTruncateFittingNvarchar(t *testing.T) {
+	c := &copier{}
+	table := tableMeta{Schema: "event", Name: "Event"}
+	col := columnMeta{Name: "lokalitaet_kanton", SystemTypeName: "nvarchar", MaxLength: 8}
+	got, err := c.replaceValue(table, col, "BE")
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	if got != "BE" {
+		t.Fatalf("replaceValue() = %q, want %q", got, "BE")
+	}
+}
+
+func TestReplaceValueTruncatesLongVarchar(t *testing.T) {
+	c := &copier{}
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "code", SystemTypeName: "varchar", MaxLength: 5}
+	got, err := c.replaceValue(table, col, "abcdefghij")
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	if got != "abcde" {
+		t.Fatalf("replaceValue() = %q, want %q", got, "abcde")
+	}
+}
+
+func TestReplaceValueDoesNotTruncateMaxNvarchar(t *testing.T) {
+	c := &copier{}
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "notes", SystemTypeName: "nvarchar", MaxLength: -1}
+	got, err := c.replaceValue(table, col, "A very long string that should not be truncated")
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	if got != "A very long string that should not be truncated" {
+		t.Fatalf("replaceValue() = %q, want unchanged value", got)
+	}
+}
+
+func TestReplaceValueTruncatesLongBytes(t *testing.T) {
+	c := &copier{}
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "data", SystemTypeName: "varbinary", MaxLength: 4}
+	got, err := c.replaceValue(table, col, []byte{1, 2, 3, 4, 5, 6})
+	if err != nil {
+		t.Fatalf("replaceValue() unexpected error: %v", err)
+	}
+	b, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("replaceValue() = %T %#v, want []byte", got, got)
+	}
+	if len(b) != 4 || b[0] != 1 || b[3] != 4 {
+		t.Fatalf("replaceValue() = %v, want [1 2 3 4]", b)
+	}
+}
