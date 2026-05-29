@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 type closeable interface {
@@ -148,12 +149,67 @@ func normalizeValue(value any, col columnMeta) any {
 		if col.SystemTypeName == "decimal" || col.SystemTypeName == "numeric" || col.SystemTypeName == "money" || col.SystemTypeName == "smallmoney" {
 			return string(v)
 		}
+		// Parse datetime strings from []byte into time.Time for bulk copy compatibility
+		if isDateTimeType(col.SystemTypeName) {
+			if t, err := parseDateTimeBytes(v); err == nil {
+				return t
+			}
+		}
 		copyBytes := make([]byte, len(v))
 		copy(copyBytes, v)
 		return copyBytes
+	case string:
+		// Parse datetime strings into time.Time for bulk copy compatibility
+		if isDateTimeType(col.SystemTypeName) {
+			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				return t
+			}
+			if t, err := time.Parse("2006-01-02T15:04:05Z", v); err == nil {
+				return t
+			}
+			if t, err := time.Parse("2006-01-02 15:04:05Z", v); err == nil {
+				return t
+			}
+			if t, err := time.Parse("2006-01-02T15:04:05", v); err == nil {
+				return t
+			}
+			if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+				return t
+			}
+			if t, err := time.Parse("2006-01-02", v); err == nil {
+				return t
+			}
+		}
+		return v
 	default:
 		return v
 	}
+}
+
+func isDateTimeType(typeName string) bool {
+	switch typeName {
+	case "datetime", "datetime2", "smalldatetime", "date", "datetimeoffset":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseDateTimeBytes(b []byte) (time.Time, error) {
+	s := string(b)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05Z",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unable to parse datetime: %s", s)
 }
 
 func joinQuotedColumns(cols []columnMeta) string {

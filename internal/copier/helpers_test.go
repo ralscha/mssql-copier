@@ -1,6 +1,9 @@
 package copier
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWildcardMatch(t *testing.T) {
 	tests := []struct {
@@ -269,6 +272,47 @@ func TestNormalizeValue(t *testing.T) {
 	got = normalizeValue(int64(42), columnMeta{SystemTypeName: "int"})
 	if got != int64(42) {
 		t.Fatalf("expected int64 to pass through, got %v", got)
+	}
+
+	// datetime string (RFC3339) -> time.Time
+	col = columnMeta{SystemTypeName: "datetime"}
+	got = normalizeValue("1904-08-28T07:53:36Z", col)
+	if _, ok := got.(time.Time); !ok {
+		t.Fatalf("expected datetime RFC3339 string to become time.Time, got %T: %v", got, got)
+	}
+
+	// datetime2 []byte (RFC3339) -> time.Time
+	col = columnMeta{SystemTypeName: "datetime2"}
+	got = normalizeValue([]byte("2024-01-02T03:04:05Z"), col)
+	if _, ok := got.(time.Time); !ok {
+		t.Fatalf("expected datetime2 []byte to become time.Time, got %T: %v", got, got)
+	}
+
+	// datetime string with space separator -> time.Time
+	col = columnMeta{SystemTypeName: "datetime"}
+	got = normalizeValue("2024-01-02 03:04:05Z", col)
+	if _, ok := got.(time.Time); !ok {
+		t.Fatalf("expected datetime space-separated string to become time.Time, got %T: %v", got, got)
+	}
+
+	// date string -> time.Time
+	col = columnMeta{SystemTypeName: "date"}
+	got = normalizeValue("2024-01-02", col)
+	if _, ok := got.(time.Time); !ok {
+		t.Fatalf("expected date string to become time.Time, got %T: %v", got, got)
+	}
+
+	// smalldatetime []byte -> time.Time
+	col = columnMeta{SystemTypeName: "smalldatetime"}
+	got = normalizeValue([]byte("2024-01-02T03:04:05"), col)
+	if _, ok := got.(time.Time); !ok {
+		t.Fatalf("expected smalldatetime []byte to become time.Time, got %T: %v", got, got)
+	}
+
+	// non-datetime string passes through
+	got = normalizeValue("hello", columnMeta{SystemTypeName: "varchar"})
+	if got != "hello" {
+		t.Fatalf("expected non-datetime string to pass through, got %v", got)
 	}
 }
 
