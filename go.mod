@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	charm.land/bubbletea/v2 v2.0.6
 	github.com/brianvoe/gofakeit/v7 v7.15.0
-	github.com/cloudwego/eino v0.8.13
+	github.com/cloudwego/eino v0.9.2
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -24,7 +24,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260511121909-c840852527f3 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
@@ -101,7 +101,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
 	golang.org/x/arch v0.27.0 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
+	golang.org/x/exp v0.0.0-20260528193900-50dc527dd6c7 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )
