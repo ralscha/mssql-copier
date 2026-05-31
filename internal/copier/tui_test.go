@@ -15,19 +15,16 @@ func TestFormAllowsEnteringQIntoTextField(t *testing.T) {
 	model := newTUIModel(config{})
 	model.formFocus = formFieldSourceServer
 
-	updated, cmd := model.updateForm(tea.KeyPressMsg(tea.Key{Text: "q", Code: 'q'}))
+	updated, _ := model.updateForm(tea.KeyPressMsg(tea.Key{Text: "q", Code: 'q'}))
 	got, ok := updated.(tuiModel)
 	if !ok {
 		t.Fatalf("updateForm() model type = %T, want tuiModel", updated)
 	}
-	if cmd != nil {
-		t.Fatal("updateForm() returned quit command for text input")
-	}
 	if got.quitting {
 		t.Fatal("updateForm() marked model as quitting for text input")
 	}
-	if got.form.Source.Server != "q" {
-		t.Fatalf("source server = %q, want q", got.form.Source.Server)
+	if got.formInputs[formFieldSourceServer].Value() != "q" {
+		t.Fatalf("source server input = %q, want q", got.formInputs[formFieldSourceServer].Value())
 	}
 }
 
@@ -150,6 +147,7 @@ func TestStartActionKeepsTUIRunningAndRecordsLogFile(t *testing.T) {
 	model := newTUIModel(config{ConfigPath: filepath.Join(tmp, "mssql-copier.yml"), Workers: 2, BatchSize: 5000, Verbose: true})
 	model.form.RunMode = tuiRunModePlan
 	model.form.Source = sqlServerDSNForm{Server: "source-host", Database: "SourceDB"}
+	model.syncFormToInputs()
 	model.formFocus = formFieldStartCopy
 
 	updated, cmd := model.handleFormEnter()
@@ -220,9 +218,30 @@ func TestDDLModeFormViewShowsCompleteActionLabel(t *testing.T) {
 	model.formFocus = formFieldStartCopy
 
 	view := model.formView()
-	if !strings.Contains(view, "> [ Export DDL ]") {
-		t.Fatalf("formView() missing DDL action label: %q", view)
+	// The view now uses lipgloss styling with ANSI codes, so strip them for comparison.
+	stripped := stripANSI(view)
+	if !strings.Contains(stripped, "[ [^R] Export DDL ]") {
+		t.Fatalf("formView() missing DDL action label: %q", stripped)
 	}
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func TestLogTailLoadsFromCurrentLogPath(t *testing.T) {

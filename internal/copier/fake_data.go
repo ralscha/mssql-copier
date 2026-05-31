@@ -355,3 +355,52 @@ func charLimit(col columnMeta) int {
 		return 0
 	}
 }
+
+// matchingOutputTypes returns gofakeit output types compatible with the given
+// SQL Server data type.  Returns nil when no type-based filtering should be
+// applied (unknown data types).
+func matchingOutputTypes(dataType string) []string {
+	dt := strings.ToLower(dataType)
+
+	// String-like types.
+	if strings.Contains(dt, "char") || strings.Contains(dt, "text") ||
+		dt == "sysname" || dt == "xml" || dt == "sql_variant" ||
+		dt == "uniqueidentifier" {
+		return []string{"string", "[]string", "[]byte", "byte", "net.IP"}
+	}
+
+	// Integer types.
+	if dt == "int" || dt == "bigint" || dt == "smallint" || dt == "tinyint" {
+		return []string{"int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64",
+			"[]int", "[]uint"}
+	}
+
+	// Float / decimal / money types.
+	if strings.Contains(dt, "float") ||
+		strings.Contains(dt, "decimal") || strings.Contains(dt, "numeric") ||
+		strings.Contains(dt, "real") || strings.Contains(dt, "money") {
+		return []string{"float32", "float64",
+			"int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64"}
+	}
+
+	// Boolean.
+	if dt == "bit" {
+		return []string{"bool"}
+	}
+
+	// Date / time types.
+	if strings.Contains(dt, "date") || strings.Contains(dt, "datetime") ||
+		strings.Contains(dt, "timestamp") || dt == "time" {
+		return []string{"time", "time.Time"}
+	}
+
+	// Binary types.
+	if dt == "binary" || dt == "varbinary" || dt == "image" ||
+		dt == "timestamp" || dt == "rowversion" {
+		return []string{"[]byte"}
+	}
+
+	return nil
+}

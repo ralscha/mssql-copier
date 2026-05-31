@@ -14,7 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/brianvoe/gofakeit/v7"
 )
 
@@ -115,6 +119,7 @@ type fakeFunctionOption struct {
 	Description string
 	Example     string
 	SearchText  string
+	Output      string // gofakeit output type, e.g. "string", "int", "bool", "time.Time"
 	Params      []gofakeit.Param
 }
 
@@ -151,14 +156,9 @@ type tuiModel struct {
 	width             int
 	height            int
 	fakeDataEntries   []tuiFakeDataEntry
-	fakeDataCursor    int
-	fakeDataOffset    int
 	pickerTarget      int
 	pickerCursor      int
-	pickerOffset      int
-	pickerQuery       string
 	paramTarget       int
-	paramInput        string
 	paramOption       fakeFunctionOption
 	fakeFunctions     []fakeFunctionOption
 	preservedFakeData map[string]string
@@ -169,12 +169,35 @@ type tuiModel struct {
 	logTailLines      []string
 	logTailScroll     int
 	logPanelFocused   bool
+
+	// Bubbles v2 components.
+	formInputs    []textinput.Model
+	fakeDataTable table.Model
+	pickerInput   textinput.Model
+	paramInput    textinput.Model
+	spinner       spinner.Model
 }
 
 func runTUI(cfg config) error {
 	program := tea.NewProgram(newTUIModel(cfg))
 	_, err := program.Run()
 	return err
+}
+
+// formTextFields lists form field indices that are text inputs.
+var formTextFields = []int{
+	formFieldSourceServer, formFieldSourcePort, formFieldSourceDatabase,
+	formFieldSourceUser, formFieldSourcePassword, formFieldSourceEncrypt,
+	formFieldSourceTrustCert, formFieldSourceOptions,
+	formFieldTargetServer, formFieldTargetPort, formFieldTargetDatabase,
+	formFieldTargetUser, formFieldTargetPassword, formFieldTargetEncrypt,
+	formFieldTargetTrustCert, formFieldTargetOptions,
+	formFieldDockerDir, formFieldDockerPort,
+	formFieldWorkers, formFieldBatchSize,
+	formFieldIncludeSchemas, formFieldExcludeSchemas,
+	formFieldIncludeTables, formFieldExcludeTables,
+	formFieldExportDDLPath, formFieldExportDataPath, formFieldExportDataRows,
+	formFieldReportPath, formFieldExportPath,
 }
 
 func newTUIModel(cfg config) tuiModel {
@@ -186,38 +209,161 @@ func newTUIModel(cfg config) tuiModel {
 	if cfg.Docker.Port > 0 {
 		dockerPortStr = strconv.Itoa(cfg.Docker.Port)
 	}
+
+	form := tuiFormState{
+		Source:         parseSQLServerDSNForm(cfg.SourceDSN),
+		Target:         parseSQLServerDSNForm(cfg.TargetDSN),
+		RunMode:        initialTUIRunMode(cfg),
+		DockerDir:      cfg.Docker.ComposeDir,
+		DockerPort:     dockerPortStr,
+		Workers:        strconv.Itoa(max(1, cfg.Workers)),
+		BatchSize:      strconv.Itoa(max(1, cfg.BatchSize)),
+		IncludeSchemas: strings.Join(cfg.IncludeSchemas, ","),
+		ExcludeSchemas: strings.Join(cfg.ExcludeSchemas, ","),
+		IncludeTables:  strings.Join(cfg.IncludeTables, ","),
+		ExcludeTables:  strings.Join(cfg.ExcludeTables, ","),
+		ExportDDLPath:  strings.TrimSpace(cfg.ExportDDLFile),
+		ExportDataPath: strings.TrimSpace(cfg.ExportDataFile),
+		ExportDataRows: strconv.Itoa(max(0, cfg.ExportDataRows)),
+		ReportPath:     strings.TrimSpace(cfg.ReportMDFile),
+		ExportPath:     exportPath,
+	}
+
+	// Initialize Bubbles v2 text inputs for all text-capable form fields.
+	formInputs := make([]textinput.Model, formFieldCount)
+	placeholderSty := lipgloss.NewStyle().Foreground(colorMuted)
+	focusedSty := textinput.DefaultStyles(true)
+	focusedSty.Focused.Prompt = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
+	focusedSty.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.White)
+	focusedSty.Blurred.Placeholder = placeholderSty
+	focusedSty.Focused.Placeholder = placeholderSty
+
+	for _, field := range formTextFields {
+		formInputs[field] = textinput.New()
+		formInputs[field].Prompt = "  "
+		formInputs[field].SetWidth(40)
+		formInputs[field].SetStyles(focusedSty)
+	}
+
+	// Set placeholders and initial values.
+	formInputs[formFieldSourceServer].Placeholder = "localhost"
+	formInputs[formFieldSourcePort].Placeholder = "1433"
+	formInputs[formFieldSourcePort].SetValue(form.Source.Port)
+	formInputs[formFieldSourceDatabase].Placeholder = "mydb"
+	formInputs[formFieldSourceDatabase].SetValue(form.Source.Database)
+	formInputs[formFieldSourceUser].Placeholder = "sa"
+	formInputs[formFieldSourceUser].SetValue(form.Source.Username)
+	formInputs[formFieldSourcePassword].SetValue(form.Source.Password)
+	formInputs[formFieldSourcePassword].EchoMode = textinput.EchoPassword
+	formInputs[formFieldSourcePassword].EchoCharacter = rune(8226)
+	formInputs[formFieldSourceEncrypt].Placeholder = "disable"
+	formInputs[formFieldSourceEncrypt].SetValue(form.Source.Encrypt)
+	formInputs[formFieldSourceTrustCert].Placeholder = "true"
+	formInputs[formFieldSourceTrustCert].SetValue(form.Source.TrustServerCertificate)
+	formInputs[formFieldSourceOptions].SetValue(form.Source.Options)
+
+	formInputs[formFieldTargetServer].Placeholder = "localhost"
+	formInputs[formFieldTargetPort].Placeholder = "1433"
+	formInputs[formFieldTargetPort].SetValue(form.Target.Port)
+	formInputs[formFieldTargetDatabase].Placeholder = "mydb"
+	formInputs[formFieldTargetDatabase].SetValue(form.Target.Database)
+	formInputs[formFieldTargetUser].Placeholder = "sa"
+	formInputs[formFieldTargetUser].SetValue(form.Target.Username)
+	formInputs[formFieldTargetPassword].SetValue(form.Target.Password)
+	formInputs[formFieldTargetPassword].EchoMode = textinput.EchoPassword
+	formInputs[formFieldTargetPassword].EchoCharacter = rune(8226)
+	formInputs[formFieldTargetEncrypt].Placeholder = "disable"
+	formInputs[formFieldTargetEncrypt].SetValue(form.Target.Encrypt)
+	formInputs[formFieldTargetTrustCert].Placeholder = "true"
+	formInputs[formFieldTargetTrustCert].SetValue(form.Target.TrustServerCertificate)
+	formInputs[formFieldTargetOptions].SetValue(form.Target.Options)
+
+	formInputs[formFieldDockerDir].Placeholder = defaultDockerDir
+	formInputs[formFieldDockerDir].SetValue(form.DockerDir)
+	formInputs[formFieldDockerPort].Placeholder = strconv.Itoa(defaultDockerPort)
+	formInputs[formFieldDockerPort].SetValue(form.DockerPort)
+	formInputs[formFieldWorkers].Placeholder = "4"
+	formInputs[formFieldWorkers].SetValue(form.Workers)
+	formInputs[formFieldBatchSize].Placeholder = "5000"
+	formInputs[formFieldBatchSize].SetValue(form.BatchSize)
+	formInputs[formFieldIncludeSchemas].SetValue(form.IncludeSchemas)
+	formInputs[formFieldExcludeSchemas].SetValue(form.ExcludeSchemas)
+	formInputs[formFieldIncludeTables].SetValue(form.IncludeTables)
+	formInputs[formFieldExcludeTables].SetValue(form.ExcludeTables)
+	formInputs[formFieldExportDDLPath].SetValue(form.ExportDDLPath)
+	formInputs[formFieldExportDataPath].SetValue(form.ExportDataPath)
+	formInputs[formFieldExportDataRows].SetValue(form.ExportDataRows)
+	formInputs[formFieldReportPath].SetValue(form.ReportPath)
+	formInputs[formFieldExportPath].SetValue(form.ExportPath)
+
+	// Focus the first field.
+	formInputs[formFieldSourceServer].Focus()
+
+	// Custom table styles for the fake data screen.
+	tableStyles := table.DefaultStyles()
+	tableStyles.Header = lipgloss.NewStyle().
+		Foreground(colorPrimary).
+		Bold(true).
+		Padding(0, 1).
+		BorderBottom(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorSubtle)
+	tableStyles.Cell = lipgloss.NewStyle().Padding(0, 1)
+	tableStyles.Selected = lipgloss.NewStyle().
+		Foreground(lipgloss.White).
+		Background(colorPrimary).
+		Bold(true)
+
+	fakeDataTable := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Column", Width: 48},
+			{Title: "Type", Width: 20},
+			{Title: "Faker Function", Width: 36},
+		}),
+		table.WithFocused(true),
+		table.WithHeight(20),
+		table.WithStyles(tableStyles),
+	)
+
+	// Picker text input for filtering.
+	pickerInput := textinput.New()
+	pickerInput.Placeholder = "type to filter..."
+	pickerInput.Prompt = "  search: "
+	pickerInput.SetWidth(40)
+	pickerInput.Focus()
+
+	// Params text input.
+	paramInput := textinput.New()
+	paramInput.Placeholder = "value"
+	paramInput.Prompt = "  > "
+	paramInput.SetWidth(40)
+	paramInput.Focus()
+
+	// Spinner.
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = spinnerStyle
+
 	return tuiModel{
-		cfg: cfg,
-		form: tuiFormState{
-			Source:         parseSQLServerDSNForm(cfg.SourceDSN),
-			Target:         parseSQLServerDSNForm(cfg.TargetDSN),
-			RunMode:        initialTUIRunMode(cfg),
-			DockerDir:      cfg.Docker.ComposeDir,
-			DockerPort:     dockerPortStr,
-			Workers:        strconv.Itoa(max(1, cfg.Workers)),
-			BatchSize:      strconv.Itoa(max(1, cfg.BatchSize)),
-			IncludeSchemas: strings.Join(cfg.IncludeSchemas, ","),
-			ExcludeSchemas: strings.Join(cfg.ExcludeSchemas, ","),
-			IncludeTables:  strings.Join(cfg.IncludeTables, ","),
-			ExcludeTables:  strings.Join(cfg.ExcludeTables, ","),
-			ExportDDLPath:  strings.TrimSpace(cfg.ExportDDLFile),
-			ExportDataPath: strings.TrimSpace(cfg.ExportDataFile),
-			ExportDataRows: strconv.Itoa(max(0, cfg.ExportDataRows)),
-			ReportPath:     strings.TrimSpace(cfg.ReportMDFile),
-			ExportPath:     exportPath,
-		},
+		cfg:               cfg,
+		form:              form,
 		screen:            tuiScreenForm,
 		formFocus:         formFieldSourceServer,
 		width:             100,
 		height:            30,
+		formInputs:        formInputs,
+		fakeDataTable:     fakeDataTable,
+		pickerInput:       pickerInput,
+		paramInput:        paramInput,
 		fakeFunctions:     availableFakeFunctionOptions(),
 		preservedFakeData: preserveNonFullFakeData(cfg.FakeData),
 		recentLogPaths:    listRecentTUILogPaths(exportPath, 5),
+		spinner:           s,
 	}
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return nil
+	return tea.Batch(m.spinner.Tick, m.formInputs[formFieldSourceServer].Focus())
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -225,7 +371,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.fakeDataTable.SetWidth(msg.Width - 4)
+		m.fakeDataTable.SetHeight(msg.Height - 12)
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	case fakeDataLoadedMsg:
 		if msg.err != nil {
 			m.screen = tuiScreenForm
@@ -234,8 +387,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.screen = tuiScreenFakeData
 		m.fakeDataEntries = msg.entries
-		m.fakeDataCursor = 0
-		m.fakeDataOffset = 0
+		m.rebuildFakeDataTable()
 		if len(msg.entries) == 0 {
 			m.status = "No copyable source columns were found."
 		} else {
@@ -268,6 +420,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			applied++
 		}
 		m.status = fmt.Sprintf("Applied %d LLM faker suggestions.", applied)
+		m.rebuildFakeDataTable()
 		return m, nil
 	case configExportedMsg:
 		if msg.err != nil {
@@ -300,15 +453,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case tuiScreenForm:
 			if m.isFormFieldTextInput(m.formFocus) {
-				m.appendFormText(msg.Content)
+				var cmd tea.Cmd
+				m.formInputs[m.formFocus], cmd = m.formInputs[m.formFocus].Update(msg)
+				return m, cmd
 			}
-		case tuiScreenLoadingFakeData, tuiScreenFakeData, tuiScreenAutoSelecting:
 		case tuiScreenFakerPicker:
-			m.pickerQuery += msg.Content
-			m.pickerCursor = 0
-			m.pickerOffset = 0
+			var cmd tea.Cmd
+			m.pickerInput, cmd = m.pickerInput.Update(msg)
+			return m, cmd
 		case tuiScreenFakerParams:
-			m.paramInput += msg.Content
+			var cmd tea.Cmd
+			m.paramInput, cmd = m.paramInput.Update(msg)
+			return m, cmd
+		case tuiScreenLoadingFakeData, tuiScreenFakeData, tuiScreenAutoSelecting:
+			// paste is ignored in these screens
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -336,165 +494,213 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) View() tea.View {
-	var builder strings.Builder
-	builder.WriteString("mssql-copier TUI\n\n")
-	builder.WriteString(m.statusLine())
-	builder.WriteString("\n\n")
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("mssql-copier -- SQL Server Data Copier & Faker"))
+	b.WriteString("\n")
+	b.WriteString(m.statusView())
+	b.WriteString("\n\n")
 
 	switch m.screen {
 	case tuiScreenForm:
-		builder.WriteString(m.formView())
+		b.WriteString(m.formView())
 	case tuiScreenLoadingFakeData:
-		builder.WriteString("Loading source schema metadata for fake-data editing...\n")
-		builder.WriteString("Press ctrl+c or q to cancel the program.\n")
+		b.WriteString(m.workingView("Connecting to source and loading schema metadata..."))
 	case tuiScreenFakeData:
-		builder.WriteString(m.fakeDataView())
+		b.WriteString(m.fakeDataView())
 	case tuiScreenFakerPicker:
-		builder.WriteString(m.fakerPickerView())
+		b.WriteString(m.fakerPickerView())
 	case tuiScreenFakerParams:
-		builder.WriteString(m.fakerParamsView())
+		b.WriteString(m.fakerParamsView())
 	case tuiScreenAutoSelecting:
-		builder.WriteString("Analyzing columns with the configured LLM and pre-selecting fake-data functions...\n")
-		builder.WriteString("Press ctrl+c or q to cancel the program.\n")
+		b.WriteString(m.workingView("Analyzing columns with the configured LLM..."))
 	}
 
-	view := tea.NewView(builder.String())
+	view := tea.NewView(b.String())
 	view.AltScreen = true
 	return view
 }
 
-func (m tuiModel) statusLine() string {
+func (m tuiModel) statusView() string {
 	if strings.TrimSpace(m.status) == "" {
-		return "Status: ready"
+		return statusStyle.Render("  Status: ready")
 	}
-	return "Status: " + m.status
+	if strings.Contains(m.status, "failed") || strings.Contains(m.status, "Error") || strings.Contains(m.status, "error") || strings.Contains(m.status, "required") {
+		return statusErrStyle.Render("  Status: " + m.status)
+	}
+	return statusOKStyle.Render("  Status: " + m.status)
+}
+
+func (m tuiModel) workingView(message string) string {
+	return fmt.Sprintf("  %s %s\n\n%s",
+		m.spinner.View(),
+		message,
+		helpStyle.Render("  Press ctrl+c or q to cancel."),
+	)
 }
 
 func (m tuiModel) formView() string {
-	type formRow struct {
-		field int
-		text  string
+	var b strings.Builder
+
+	b.WriteString(sectionHeaderStyle.Render("  Source Connection"))
+	b.WriteString("\n")
+	b.WriteString(m.formTextRow(formFieldSourceServer, "Source server"))
+	b.WriteString(m.formTextRow(formFieldSourcePort, "Source port"))
+	b.WriteString(m.formTextRow(formFieldSourceDatabase, "Source database"))
+	b.WriteString(m.formTextRow(formFieldSourceUser, "Source user"))
+	b.WriteString(m.formTextRow(formFieldSourcePassword, "Source password"))
+	b.WriteString(m.formTextRow(formFieldSourceEncrypt, "Source encrypt"))
+	b.WriteString(m.formTextRow(formFieldSourceTrustCert, "Source trust cert"))
+	b.WriteString(m.formTextRow(formFieldSourceOptions, "Source options"))
+
+	b.WriteString("\n")
+	b.WriteString(sectionHeaderStyle.Render("  Run Mode & Target"))
+	b.WriteString("\n")
+	b.WriteString(m.formActionRow(formFieldRunMode, "Run mode: "+m.form.RunMode.label()))
+
+	if m.isFormFieldVisible(formFieldTargetType) {
+		targetTypeLabel := "local (enter to switch to docker)"
+		if m.cfg.Docker.Enabled {
+			targetTypeLabel = "docker (enter to switch to local)"
+		}
+		b.WriteString(m.formActionRow(formFieldTargetType, "Target type: "+targetTypeLabel))
 	}
 
-	targetTypeLabel := "local (enter to switch to docker)"
 	if m.cfg.Docker.Enabled {
-		targetTypeLabel = "docker (enter to switch to local)"
-	}
-	runModeLabel := m.form.RunMode.label()
-	rows := []formRow{
-		{field: formFieldSourceServer, text: m.formTextRow(formFieldSourceServer, "Source server", m.form.Source.Server)},
-		{field: formFieldSourcePort, text: m.formTextRow(formFieldSourcePort, "Source port", m.form.Source.Port)},
-		{field: formFieldSourceDatabase, text: m.formTextRow(formFieldSourceDatabase, "Source database", m.form.Source.Database)},
-		{field: formFieldSourceUser, text: m.formTextRow(formFieldSourceUser, "Source user", m.form.Source.Username)},
-		{field: formFieldSourcePassword, text: m.formTextRow(formFieldSourcePassword, "Source password", m.form.Source.Password)},
-		{field: formFieldSourceEncrypt, text: m.formTextRow(formFieldSourceEncrypt, "Source encrypt", m.form.Source.Encrypt)},
-		{field: formFieldSourceTrustCert, text: m.formTextRow(formFieldSourceTrustCert, "Source trust cert", m.form.Source.TrustServerCertificate)},
-		{field: formFieldSourceOptions, text: m.formTextRow(formFieldSourceOptions, "Source options", m.form.Source.Options)},
-		{field: formFieldRunMode, text: m.formActionRow(formFieldRunMode, "Run mode: "+runModeLabel)},
-		{field: formFieldTargetType, text: m.formTextRow(formFieldTargetType, "Target type", targetTypeLabel)},
-	}
-
-	if m.cfg.Docker.Enabled {
-		dockerDir := m.form.DockerDir
-		if dockerDir == "" {
-			dockerDir = defaultDockerDir
-		}
-		dockerPort := m.form.DockerPort
-		if dockerPort == "" {
-			dockerPort = strconv.Itoa(defaultDockerPort)
-		}
 		saPasswordDisplay := m.cfg.Docker.SAPassword
 		if saPasswordDisplay == "" {
 			saPasswordDisplay = "<not generated>"
 		}
-		rows = append(rows,
-			formRow{field: formFieldDockerDir, text: m.formTextRow(formFieldDockerDir, "Compose dir", dockerDir)},
-			formRow{field: formFieldDockerPort, text: m.formTextRow(formFieldDockerPort, "Docker port", dockerPort)},
-			formRow{field: formFieldDockerPersistent, text: m.formBoolRow(formFieldDockerPersistent, "Persistent", m.cfg.Docker.Persistent)},
-			formRow{field: formFieldDockerPassword, text: m.formTextRow(formFieldDockerPassword, "SA password", saPasswordDisplay+" (enter to regenerate)")},
-		)
-	} else {
-		rows = append(rows,
-			formRow{field: formFieldTargetServer, text: m.formTextRow(formFieldTargetServer, "Target server", m.form.Target.Server)},
-			formRow{field: formFieldTargetPort, text: m.formTextRow(formFieldTargetPort, "Target port", m.form.Target.Port)},
-			formRow{field: formFieldTargetDatabase, text: m.formTextRow(formFieldTargetDatabase, "Target database", m.form.Target.Database)},
-			formRow{field: formFieldTargetUser, text: m.formTextRow(formFieldTargetUser, "Target user", m.form.Target.Username)},
-			formRow{field: formFieldTargetPassword, text: m.formTextRow(formFieldTargetPassword, "Target password", m.form.Target.Password)},
-			formRow{field: formFieldTargetEncrypt, text: m.formTextRow(formFieldTargetEncrypt, "Target encrypt", m.form.Target.Encrypt)},
-			formRow{field: formFieldTargetTrustCert, text: m.formTextRow(formFieldTargetTrustCert, "Target trust cert", m.form.Target.TrustServerCertificate)},
-			formRow{field: formFieldTargetOptions, text: m.formTextRow(formFieldTargetOptions, "Target options", m.form.Target.Options)},
-		)
+		b.WriteString(m.formTextRow(formFieldDockerDir, "Compose dir"))
+		b.WriteString(m.formTextRow(formFieldDockerPort, "Docker port"))
+		b.WriteString(m.formBoolRow(formFieldDockerPersistent, "Persistent", m.cfg.Docker.Persistent))
+		b.WriteString(m.formActionRow(formFieldDockerPassword, "SA password: "+saPasswordDisplay+" (enter to regenerate)"))
+	} else if m.isFormFieldVisible(formFieldTargetServer) {
+		b.WriteString(m.formTextRow(formFieldTargetServer, "Target server"))
+		b.WriteString(m.formTextRow(formFieldTargetPort, "Target port"))
+		b.WriteString(m.formTextRow(formFieldTargetDatabase, "Target database"))
+		b.WriteString(m.formTextRow(formFieldTargetUser, "Target user"))
+		b.WriteString(m.formTextRow(formFieldTargetPassword, "Target password"))
+		b.WriteString(m.formTextRow(formFieldTargetEncrypt, "Target encrypt"))
+		b.WriteString(m.formTextRow(formFieldTargetTrustCert, "Target trust cert"))
+		b.WriteString(m.formTextRow(formFieldTargetOptions, "Target options"))
 	}
 
-	rows = append(rows,
-		formRow{field: formFieldWorkers, text: m.formTextRow(formFieldWorkers, "Workers", m.form.Workers)},
-		formRow{field: formFieldBatchSize, text: m.formTextRow(formFieldBatchSize, "Batch size", m.form.BatchSize)},
-		formRow{field: formFieldVerbose, text: m.formBoolRow(formFieldVerbose, "Verbose", m.cfg.Verbose)},
-		formRow{field: formFieldDropExisting, text: m.formBoolRow(formFieldDropExisting, "Drop existing", m.cfg.DropExisting)},
-		formRow{field: formFieldIncludeSchemas, text: m.formTextRow(formFieldIncludeSchemas, "Include schemas", m.form.IncludeSchemas)},
-		formRow{field: formFieldExcludeSchemas, text: m.formTextRow(formFieldExcludeSchemas, "Exclude schemas", m.form.ExcludeSchemas)},
-		formRow{field: formFieldIncludeTables, text: m.formTextRow(formFieldIncludeTables, "Include tables", m.form.IncludeTables)},
-		formRow{field: formFieldExcludeTables, text: m.formTextRow(formFieldExcludeTables, "Exclude tables", m.form.ExcludeTables)},
-		formRow{field: formFieldExportDDLPath, text: m.formTextRow(formFieldExportDDLPath, "DDL export path", m.form.ExportDDLPath)},
-		formRow{field: formFieldExportDataPath, text: m.formTextRow(formFieldExportDataPath, "Data export path", m.form.ExportDataPath)},
-		formRow{field: formFieldExportDataRows, text: m.formTextRow(formFieldExportDataRows, "Export data rows", m.form.ExportDataRows)},
-		formRow{field: formFieldReportPath, text: m.formTextRow(formFieldReportPath, "Report path", m.form.ReportPath)},
-		formRow{field: formFieldExportPath, text: m.formTextRow(formFieldExportPath, "Config path", m.form.ExportPath)},
-		formRow{field: formFieldEditFakeData, text: m.formActionRow(formFieldEditFakeData, fmt.Sprintf("Edit fake data (%d exact rules)", countExactFullFakeDataRules(m.cfg.FakeData)))},
-		formRow{field: formFieldExportConfig, text: m.formActionRow(formFieldExportConfig, "Export YAML config")},
-		formRow{field: formFieldStartCopy, text: m.formActionRow(formFieldStartCopy, m.form.RunMode.submitLabel())},
-	)
-
-	visibleRows := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if m.isFormFieldVisible(row.field) {
-			visibleRows = append(visibleRows, row.text)
-		}
+	b.WriteString("\n")
+	b.WriteString(sectionHeaderStyle.Render("  Execution Settings"))
+	b.WriteString("\n")
+	if m.isFormFieldVisible(formFieldWorkers) {
+		b.WriteString(m.formTextRow(formFieldWorkers, "Workers"))
+		b.WriteString(m.formTextRow(formFieldBatchSize, "Batch size"))
 	}
-
-	sections := []string{
-		"Enter source settings, choose a run mode, and then adjust only the settings used by that mode.",
-		"Keys: type to edit, backspace deletes, up/down or tab moves, enter toggles/actions, ctrl+c quits, ctrl+l focuses log panel.",
-		"",
-		strings.Join(visibleRows, "\n"),
-		"",
-		m.executionView(),
-		"",
-		m.logFilesView(),
-		"",
-		m.logTailView(),
+	if m.isFormFieldVisible(formFieldVerbose) {
+		b.WriteString(m.formBoolRow(formFieldVerbose, "Verbose", m.cfg.Verbose))
 	}
-	return strings.Join(sections, "\n")
+	if m.isFormFieldVisible(formFieldDropExisting) {
+		b.WriteString(m.formBoolRow(formFieldDropExisting, "Drop existing", m.cfg.DropExisting))
+	}
+	b.WriteString(m.formTextRow(formFieldIncludeSchemas, "Include schemas"))
+	b.WriteString(m.formTextRow(formFieldExcludeSchemas, "Exclude schemas"))
+	b.WriteString(m.formTextRow(formFieldIncludeTables, "Include tables"))
+	b.WriteString(m.formTextRow(formFieldExcludeTables, "Exclude tables"))
+	if m.isFormFieldVisible(formFieldExportDDLPath) {
+		b.WriteString(m.formTextRow(formFieldExportDDLPath, "DDL export path"))
+	}
+	if m.isFormFieldVisible(formFieldExportDataPath) {
+		b.WriteString(m.formTextRow(formFieldExportDataPath, "Data export path"))
+		b.WriteString(m.formTextRow(formFieldExportDataRows, "Export data rows"))
+	}
+	if m.isFormFieldVisible(formFieldReportPath) {
+		b.WriteString(m.formTextRow(formFieldReportPath, "Report path"))
+	}
+	b.WriteString(m.formTextRow(formFieldExportPath, "Config path"))
+
+	b.WriteString("\n")
+	if m.isFormFieldVisible(formFieldEditFakeData) {
+		b.WriteString(m.formActionRow(formFieldEditFakeData, fmt.Sprintf("[^F] Edit fake data (%d exact rules)", countExactFullFakeDataRules(m.cfg.FakeData))))
+	}
+	b.WriteString(m.formActionRow(formFieldExportConfig, "[^E] Export YAML config"))
+	b.WriteString(m.formActionRow(formFieldStartCopy, fmt.Sprintf("[^R] %s", m.form.RunMode.submitLabel())))
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  Keys: type to edit, tab/\u2191\u2193 navigate, enter toggles/actions, ^F=edit rules, ^E=export config, ^R=start, ctrl+c quits, ctrl+l focuses log panel."))
+
+	b.WriteString("\n")
+	b.WriteString(m.executionView())
+	b.WriteString("\n")
+	b.WriteString(m.logFilesView())
+	b.WriteString("\n")
+	b.WriteString(m.logTailView())
+
+	return b.String()
+}
+
+func (m tuiModel) formTextRow(field int, labelText string) string {
+	lbl := labelStyle.Render(fmt.Sprintf("%-20s", labelText))
+	if m.formFocus == field {
+		lbl = activeLabelStyle.Render(fmt.Sprintf("%-20s", labelText))
+		return fmt.Sprintf("  %s %s\n", lbl, m.formInputs[field].View())
+	}
+	return fmt.Sprintf("  %s %s\n", lbl, m.formInputs[field].View())
+}
+
+func (m tuiModel) formBoolRow(field int, labelText string, value bool) string {
+	state := lipgloss.NewStyle().Foreground(colorMuted).Render("no")
+	if value {
+		state = lipgloss.NewStyle().Foreground(colorAccent).Render("yes")
+	}
+	lbl := labelStyle.Render(fmt.Sprintf("%-20s", labelText))
+	if m.formFocus == field {
+		lbl = activeLabelStyle.Render(fmt.Sprintf("%-20s", labelText))
+	}
+	marker := "  "
+	if m.formFocus == field {
+		marker = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("> ")
+	}
+	return fmt.Sprintf("  %s %s%s\n", lbl, marker, state)
+}
+
+func (m tuiModel) formActionRow(field int, labelText string) string {
+	if m.formFocus == field {
+		return "  " + activeButtonStyle.Render("[ "+labelText+" ]") + "\n"
+	}
+	return "  " + buttonStyle.Render("[ "+labelText+" ]") + "\n"
 }
 
 func (m tuiModel) executionView() string {
-	rows := []string{"Action"}
+	var b strings.Builder
+	b.WriteString(sectionHeaderStyle.Render("  Action"))
+	b.WriteString("\n")
 	if m.runInProgress {
-		rows = append(rows,
-			fmt.Sprintf("  State: running %s", m.form.RunMode.label()),
-			fmt.Sprintf("  Active log: %s", m.currentLogPath),
-			"  Start is disabled until the current action completes.",
-		)
-		return strings.Join(rows, "\n")
+		b.WriteString(statusStyle.Render(fmt.Sprintf("  State: running %s", m.form.RunMode.label())))
+		b.WriteString("\n")
+		b.WriteString(statusStyle.Render(fmt.Sprintf("  Active log: %s", m.currentLogPath)))
+		b.WriteString("\n")
+		b.WriteString(statusStyle.Render("  Start is disabled until the current action completes."))
+	} else {
+		b.WriteString(statusOKStyle.Render("  State: idle"))
+		b.WriteString("\n")
+		if strings.TrimSpace(m.currentLogPath) != "" {
+			b.WriteString(statusStyle.Render(fmt.Sprintf("  Last log: %s", m.currentLogPath)))
+		}
 	}
-	rows = append(rows, "  State: idle")
-	if strings.TrimSpace(m.currentLogPath) != "" {
-		rows = append(rows, fmt.Sprintf("  Last log: %s", m.currentLogPath))
-	}
-	return strings.Join(rows, "\n")
+	return b.String()
 }
 
 func (m tuiModel) logFilesView() string {
-	rows := []string{"Log files"}
+	var b strings.Builder
+	b.WriteString(sectionHeaderStyle.Render("  Log files"))
+	b.WriteString("\n")
 	logPaths := m.visibleLogPaths()
 	if len(logPaths) == 0 {
-		rows = append(rows, "  No TUI log files yet. Start an action to create one.")
-		return strings.Join(rows, "\n")
+		b.WriteString(statusStyle.Render("  No TUI log files yet. Start an action to create one."))
+		return b.String()
 	}
 	for _, logPath := range logPaths {
-		rows = append(rows, "  - "+logPath)
+		b.WriteString(statusStyle.Render("  - " + logPath))
+		b.WriteString("\n")
 	}
-	return strings.Join(rows, "\n")
+	return b.String()
 }
 
 func (m tuiModel) visibleLogPaths() []string {
@@ -609,26 +815,28 @@ func (m tuiModel) configLinesEstimate() int {
 }
 
 func (m tuiModel) logTailView() string {
-	var builder strings.Builder
-	builder.WriteString(strings.Repeat("─", max(1, m.width-2)))
-	builder.WriteString("\n")
+	var b strings.Builder
+	b.WriteString(strings.Repeat("─", max(1, m.width-2)))
+	b.WriteString("\n")
 
 	if m.logPanelFocused {
-		builder.WriteString("▶ Log tail (scroll with arrows / pgup / pgdn, esc to return to config)")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("▶ Log tail"))
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(" (scroll with arrows / pgup / pgdn, esc to return to config)"))
 	} else {
-		builder.WriteString("  Log tail (press ctrl+l to focus)")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  Log tail (press ctrl+l to focus)"))
 	}
 	if path := m.bestLogPathForTail(); path != "" {
-		builder.WriteString(" — ")
-		builder.WriteString(filepath.Base(path))
+		b.WriteString(" — ")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorAccent).Render(filepath.Base(path)))
 	}
-	builder.WriteString("\n")
-	builder.WriteString(strings.Repeat("─", max(1, m.width-2)))
-	builder.WriteString("\n")
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", max(1, m.width-2)))
+	b.WriteString("\n")
 
 	if len(m.logTailLines) == 0 {
-		builder.WriteString("  No log content yet. Start an action to see output here.\n")
-		return builder.String()
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  No log content yet. Start an action to see output here."))
+		b.WriteString("\n")
+		return b.String()
 	}
 
 	visible := m.visibleLogTailRows()
@@ -636,40 +844,15 @@ func (m tuiModel) logTailView() string {
 	end := min(len(m.logTailLines), start+visible)
 	for i := start; i < end; i++ {
 		line := m.logTailLines[i]
-		// Truncate lines that are too wide.
 		maxLineWidth := max(1, m.width-2)
 		if len(line) > maxLineWidth {
 			line = line[:maxLineWidth]
 		}
-		builder.WriteString(" ")
-		builder.WriteString(line)
-		builder.WriteString("\n")
+		b.WriteString(" ")
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
-	return builder.String()
-}
-
-func (m tuiModel) formTextRow(index int, label string, value string) string {
-	prefix := "  "
-	if m.formFocus == index {
-		prefix = "> "
-	}
-	return fmt.Sprintf("%s%-20s %s", prefix, label+":", value)
-}
-
-func (m tuiModel) formBoolRow(index int, label string, value bool) string {
-	state := "no"
-	if value {
-		state = "yes"
-	}
-	return m.formTextRow(index, label, state)
-}
-
-func (m tuiModel) formActionRow(index int, label string) string {
-	marker := "  "
-	if m.formFocus == index {
-		marker = "> "
-	}
-	return marker + "[ " + label + " ] "
+	return b.String()
 }
 
 func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -690,23 +873,63 @@ func (m tuiModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.loadLogTail()
 		m.status = "Log panel focused. Use arrows/pgup/pgdn to scroll, esc to return to config."
 		return m, nil
-	case "tab", "down":
-		m.formFocus = m.nextFormField()
-		return m, nil
-	case "shift+tab", "up":
-		m.formFocus = m.prevFormField()
-		return m, nil
+	case "ctrl+f":
+		if !m.isFormFieldVisible(formFieldEditFakeData) {
+			return m, nil
+		}
+		m.syncInputsToForm()
+		m.formFocus = formFieldEditFakeData
+		m.blurAllInputs()
+		return m.handleFormEnter()
+	case "ctrl+e":
+		m.syncInputsToForm()
+		m.formFocus = formFieldExportConfig
+		m.blurAllInputs()
+		return m.handleFormEnter()
+	case "ctrl+r":
+		m.syncInputsToForm()
+		m.formFocus = formFieldStartCopy
+		m.blurAllInputs()
+		return m.handleFormEnter()
+	case "tab":
+		return m.cycleFormFocus(1), nil
+	case "shift+tab":
+		return m.cycleFormFocus(-1), nil
+	case "down":
+		return m.cycleFormFocus(1), nil
+	case "up":
+		return m.cycleFormFocus(-1), nil
 	case "enter":
 		return m.handleFormEnter()
-	case "backspace":
-		m.deleteFormText()
-		return m, nil
 	}
 
-	if msg.Key().Text != "" {
-		m.appendFormText(msg.Key().Text)
+	// Forward unmatched keys to the focused text input.
+	if m.isFormFieldTextInput(m.formFocus) {
+		var cmd tea.Cmd
+		m.formInputs[m.formFocus], cmd = m.formInputs[m.formFocus].Update(msg)
+		return m, cmd
 	}
 	return m, nil
+}
+
+func (m tuiModel) cycleFormFocus(direction int) tuiModel {
+	if direction > 0 {
+		m.formFocus = m.nextFormField()
+	} else {
+		m.formFocus = m.prevFormField()
+	}
+	// Blur all text inputs, then focus the current one if it's a text field.
+	m.blurAllInputs()
+	if m.isFormFieldTextInput(m.formFocus) {
+		m.formInputs[m.formFocus].Focus()
+	}
+	return m
+}
+
+func (m *tuiModel) blurAllInputs() {
+	for i := range m.formInputs {
+		m.formInputs[i].Blur()
+	}
 }
 
 func (m tuiModel) updateLogPanelFocus(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -795,6 +1018,9 @@ func (m tuiModel) prevFormField() int {
 }
 
 func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
+	// Sync textinput values back to form state before processing.
+	m.syncInputsToForm()
+
 	switch m.formFocus {
 	case formFieldRunMode:
 		m.form.RunMode = m.form.RunMode.next()
@@ -890,131 +1116,86 @@ func prependLogPath(existing []string, logPath string, limit int) []string {
 	return paths
 }
 
-func (m *tuiModel) appendFormText(text string) {
-	switch m.formFocus {
-	case formFieldSourceServer:
-		m.form.Source.Server += text
-	case formFieldSourcePort:
-		m.form.Source.Port += text
-	case formFieldSourceDatabase:
-		m.form.Source.Database += text
-	case formFieldSourceUser:
-		m.form.Source.Username += text
-	case formFieldSourcePassword:
-		m.form.Source.Password += text
-	case formFieldSourceEncrypt:
-		m.form.Source.Encrypt += text
-	case formFieldSourceTrustCert:
-		m.form.Source.TrustServerCertificate += text
-	case formFieldSourceOptions:
-		m.form.Source.Options += text
-	case formFieldTargetServer:
-		m.form.Target.Server += text
-	case formFieldTargetPort:
-		m.form.Target.Port += text
-	case formFieldTargetDatabase:
-		m.form.Target.Database += text
-	case formFieldTargetUser:
-		m.form.Target.Username += text
-	case formFieldTargetPassword:
-		m.form.Target.Password += text
-	case formFieldTargetEncrypt:
-		m.form.Target.Encrypt += text
-	case formFieldTargetTrustCert:
-		m.form.Target.TrustServerCertificate += text
-	case formFieldTargetOptions:
-		m.form.Target.Options += text
-	case formFieldDockerDir:
-		m.form.DockerDir += text
-	case formFieldDockerPort:
-		m.form.DockerPort += text
-	case formFieldWorkers:
-		m.form.Workers += text
-	case formFieldBatchSize:
-		m.form.BatchSize += text
-	case formFieldIncludeSchemas:
-		m.form.IncludeSchemas += text
-	case formFieldExcludeSchemas:
-		m.form.ExcludeSchemas += text
-	case formFieldIncludeTables:
-		m.form.IncludeTables += text
-	case formFieldExcludeTables:
-		m.form.ExcludeTables += text
-	case formFieldExportDDLPath:
-		m.form.ExportDDLPath += text
-	case formFieldExportDataPath:
-		m.form.ExportDataPath += text
-	case formFieldExportDataRows:
-		m.form.ExportDataRows += text
-	case formFieldReportPath:
-		m.form.ReportPath += text
-	case formFieldExportPath:
-		m.form.ExportPath += text
-	}
-	m.status = ""
+// syncFormToInputs copies form state values into textinput.Model instances.
+func (m *tuiModel) syncFormToInputs() {
+	m.formInputs[formFieldSourceServer].SetValue(m.form.Source.Server)
+	m.formInputs[formFieldSourcePort].SetValue(m.form.Source.Port)
+	m.formInputs[formFieldSourceDatabase].SetValue(m.form.Source.Database)
+	m.formInputs[formFieldSourceUser].SetValue(m.form.Source.Username)
+	m.formInputs[formFieldSourcePassword].SetValue(m.form.Source.Password)
+	m.formInputs[formFieldSourceEncrypt].SetValue(m.form.Source.Encrypt)
+	m.formInputs[formFieldSourceTrustCert].SetValue(m.form.Source.TrustServerCertificate)
+	m.formInputs[formFieldSourceOptions].SetValue(m.form.Source.Options)
+	m.formInputs[formFieldTargetServer].SetValue(m.form.Target.Server)
+	m.formInputs[formFieldTargetPort].SetValue(m.form.Target.Port)
+	m.formInputs[formFieldTargetDatabase].SetValue(m.form.Target.Database)
+	m.formInputs[formFieldTargetUser].SetValue(m.form.Target.Username)
+	m.formInputs[formFieldTargetPassword].SetValue(m.form.Target.Password)
+	m.formInputs[formFieldTargetEncrypt].SetValue(m.form.Target.Encrypt)
+	m.formInputs[formFieldTargetTrustCert].SetValue(m.form.Target.TrustServerCertificate)
+	m.formInputs[formFieldTargetOptions].SetValue(m.form.Target.Options)
+	m.formInputs[formFieldDockerDir].SetValue(m.form.DockerDir)
+	m.formInputs[formFieldDockerPort].SetValue(m.form.DockerPort)
+	m.formInputs[formFieldWorkers].SetValue(m.form.Workers)
+	m.formInputs[formFieldBatchSize].SetValue(m.form.BatchSize)
+	m.formInputs[formFieldIncludeSchemas].SetValue(m.form.IncludeSchemas)
+	m.formInputs[formFieldExcludeSchemas].SetValue(m.form.ExcludeSchemas)
+	m.formInputs[formFieldIncludeTables].SetValue(m.form.IncludeTables)
+	m.formInputs[formFieldExcludeTables].SetValue(m.form.ExcludeTables)
+	m.formInputs[formFieldExportDDLPath].SetValue(m.form.ExportDDLPath)
+	m.formInputs[formFieldExportDataPath].SetValue(m.form.ExportDataPath)
+	m.formInputs[formFieldExportDataRows].SetValue(m.form.ExportDataRows)
+	m.formInputs[formFieldReportPath].SetValue(m.form.ReportPath)
+	m.formInputs[formFieldExportPath].SetValue(m.form.ExportPath)
 }
 
-func (m *tuiModel) deleteFormText() {
-	switch m.formFocus {
-	case formFieldSourceServer:
-		m.form.Source.Server = trimLastRune(m.form.Source.Server)
-	case formFieldSourcePort:
-		m.form.Source.Port = trimLastRune(m.form.Source.Port)
-	case formFieldSourceDatabase:
-		m.form.Source.Database = trimLastRune(m.form.Source.Database)
-	case formFieldSourceUser:
-		m.form.Source.Username = trimLastRune(m.form.Source.Username)
-	case formFieldSourcePassword:
-		m.form.Source.Password = trimLastRune(m.form.Source.Password)
-	case formFieldSourceEncrypt:
-		m.form.Source.Encrypt = trimLastRune(m.form.Source.Encrypt)
-	case formFieldSourceTrustCert:
-		m.form.Source.TrustServerCertificate = trimLastRune(m.form.Source.TrustServerCertificate)
-	case formFieldSourceOptions:
-		m.form.Source.Options = trimLastRune(m.form.Source.Options)
-	case formFieldTargetServer:
-		m.form.Target.Server = trimLastRune(m.form.Target.Server)
-	case formFieldTargetPort:
-		m.form.Target.Port = trimLastRune(m.form.Target.Port)
-	case formFieldTargetDatabase:
-		m.form.Target.Database = trimLastRune(m.form.Target.Database)
-	case formFieldTargetUser:
-		m.form.Target.Username = trimLastRune(m.form.Target.Username)
-	case formFieldTargetPassword:
-		m.form.Target.Password = trimLastRune(m.form.Target.Password)
-	case formFieldTargetEncrypt:
-		m.form.Target.Encrypt = trimLastRune(m.form.Target.Encrypt)
-	case formFieldTargetTrustCert:
-		m.form.Target.TrustServerCertificate = trimLastRune(m.form.Target.TrustServerCertificate)
-	case formFieldTargetOptions:
-		m.form.Target.Options = trimLastRune(m.form.Target.Options)
-	case formFieldDockerDir:
-		m.form.DockerDir = trimLastRune(m.form.DockerDir)
-	case formFieldDockerPort:
-		m.form.DockerPort = trimLastRune(m.form.DockerPort)
-	case formFieldWorkers:
-		m.form.Workers = trimLastRune(m.form.Workers)
-	case formFieldBatchSize:
-		m.form.BatchSize = trimLastRune(m.form.BatchSize)
-	case formFieldIncludeSchemas:
-		m.form.IncludeSchemas = trimLastRune(m.form.IncludeSchemas)
-	case formFieldExcludeSchemas:
-		m.form.ExcludeSchemas = trimLastRune(m.form.ExcludeSchemas)
-	case formFieldIncludeTables:
-		m.form.IncludeTables = trimLastRune(m.form.IncludeTables)
-	case formFieldExcludeTables:
-		m.form.ExcludeTables = trimLastRune(m.form.ExcludeTables)
-	case formFieldExportDDLPath:
-		m.form.ExportDDLPath = trimLastRune(m.form.ExportDDLPath)
-	case formFieldExportDataPath:
-		m.form.ExportDataPath = trimLastRune(m.form.ExportDataPath)
-	case formFieldExportDataRows:
-		m.form.ExportDataRows = trimLastRune(m.form.ExportDataRows)
-	case formFieldReportPath:
-		m.form.ReportPath = trimLastRune(m.form.ReportPath)
-	case formFieldExportPath:
-		m.form.ExportPath = trimLastRune(m.form.ExportPath)
+// syncInputsToForm copies textinput.Model values back into form state.
+func (m *tuiModel) syncInputsToForm() {
+	m.form.Source.Server = m.formInputs[formFieldSourceServer].Value()
+	m.form.Source.Port = m.formInputs[formFieldSourcePort].Value()
+	m.form.Source.Database = m.formInputs[formFieldSourceDatabase].Value()
+	m.form.Source.Username = m.formInputs[formFieldSourceUser].Value()
+	m.form.Source.Password = m.formInputs[formFieldSourcePassword].Value()
+	m.form.Source.Encrypt = m.formInputs[formFieldSourceEncrypt].Value()
+	m.form.Source.TrustServerCertificate = m.formInputs[formFieldSourceTrustCert].Value()
+	m.form.Source.Options = m.formInputs[formFieldSourceOptions].Value()
+	m.form.Target.Server = m.formInputs[formFieldTargetServer].Value()
+	m.form.Target.Port = m.formInputs[formFieldTargetPort].Value()
+	m.form.Target.Database = m.formInputs[formFieldTargetDatabase].Value()
+	m.form.Target.Username = m.formInputs[formFieldTargetUser].Value()
+	m.form.Target.Password = m.formInputs[formFieldTargetPassword].Value()
+	m.form.Target.Encrypt = m.formInputs[formFieldTargetEncrypt].Value()
+	m.form.Target.TrustServerCertificate = m.formInputs[formFieldTargetTrustCert].Value()
+	m.form.Target.Options = m.formInputs[formFieldTargetOptions].Value()
+	m.form.DockerDir = m.formInputs[formFieldDockerDir].Value()
+	m.form.DockerPort = m.formInputs[formFieldDockerPort].Value()
+	m.form.Workers = m.formInputs[formFieldWorkers].Value()
+	m.form.BatchSize = m.formInputs[formFieldBatchSize].Value()
+	m.form.IncludeSchemas = m.formInputs[formFieldIncludeSchemas].Value()
+	m.form.ExcludeSchemas = m.formInputs[formFieldExcludeSchemas].Value()
+	m.form.IncludeTables = m.formInputs[formFieldIncludeTables].Value()
+	m.form.ExcludeTables = m.formInputs[formFieldExcludeTables].Value()
+	m.form.ExportDDLPath = m.formInputs[formFieldExportDDLPath].Value()
+	m.form.ExportDataPath = m.formInputs[formFieldExportDataPath].Value()
+	m.form.ExportDataRows = m.formInputs[formFieldExportDataRows].Value()
+	m.form.ReportPath = m.formInputs[formFieldReportPath].Value()
+	m.form.ExportPath = m.formInputs[formFieldExportPath].Value()
+}
+
+// rebuildFakeDataTable refreshes the table.Model rows from fakeDataEntries.
+func (m *tuiModel) rebuildFakeDataTable() {
+	rows := make([]table.Row, len(m.fakeDataEntries))
+	for i, entry := range m.fakeDataEntries {
+		fakerName := "-"
+		if entry.FunctionDisplay != "" {
+			fakerName = entry.FunctionDisplay
+			if len(entry.FunctionParams) > 0 {
+				fakerName += "; " + strings.Join(entry.FunctionParams, ";")
+			}
+		}
+		rows[i] = table.Row{entry.Display, entry.TypeName, fakerName}
 	}
+	m.fakeDataTable.SetRows(rows)
 }
 
 func (m tuiModel) configFromForm(requireSource bool, requireTarget bool) (config, error) {
@@ -1162,31 +1343,26 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		m.leaveFakeDataEditor()
 		return m, nil
-	case "down":
-		if m.fakeDataCursor < count-1 {
-			m.fakeDataCursor++
-		}
-	case "up":
-		if m.fakeDataCursor > 0 {
-			m.fakeDataCursor--
-		}
-	case "pgdown":
-		m.fakeDataCursor = min(count-1, m.fakeDataCursor+m.visibleFakeDataRows())
-	case "pgup":
-		m.fakeDataCursor = max(0, m.fakeDataCursor-m.visibleFakeDataRows())
 	case "enter":
-		m.screen = tuiScreenFakerPicker
-		m.pickerTarget = m.fakeDataCursor
-		m.pickerCursor = 0
-		m.pickerOffset = 0
-		m.pickerQuery = ""
-		m.status = "Select a supported gofakeit function."
+		cursor := m.fakeDataTable.Cursor()
+		if cursor >= 0 && cursor < len(m.fakeDataEntries) {
+			m.pickerTarget = cursor
+			m.pickerInput.Reset()
+			m.pickerInput.Focus()
+			m.screen = tuiScreenFakerPicker
+			m.status = "Select a supported gofakeit function."
+		}
 		return m, nil
-	case "x", "delete", "backspace":
-		m.fakeDataEntries[m.fakeDataCursor].FunctionName = ""
-		m.fakeDataEntries[m.fakeDataCursor].FunctionDisplay = ""
-		m.fakeDataEntries[m.fakeDataCursor].FunctionParams = nil
-		m.status = "Cleared the faker selection for the active column."
+	case "x", "delete":
+		cursor := m.fakeDataTable.Cursor()
+		if cursor >= 0 && cursor < len(m.fakeDataEntries) {
+			m.fakeDataEntries[cursor].FunctionName = ""
+			m.fakeDataEntries[cursor].FunctionDisplay = ""
+			m.fakeDataEntries[cursor].FunctionParams = nil
+			m.rebuildFakeDataTable()
+			m.status = "Cleared the faker selection for the active column."
+		}
+		return m, nil
 	case "a":
 		if !m.cfg.LLM.isConfigured() {
 			m.status = errString(m.cfg.LLM.configurationError(), "LLM auto-select is not configured.")
@@ -1200,8 +1376,9 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.adjustFakeDataOffset()
-	return m, nil
+	var cmd tea.Cmd
+	m.fakeDataTable, cmd = m.fakeDataTable.Update(msg)
+	return m, cmd
 }
 
 func errString(err error, fallback string) string {
@@ -1218,131 +1395,108 @@ func (m *tuiModel) leaveFakeDataEditor() {
 }
 
 func (m tuiModel) fakeDataView() string {
-	rows := []string{
-		"Source schema columns. Press enter to choose or edit a faker, x to clear, a for LLM auto-select, s or esc to return.",
+	if len(m.fakeDataEntries) == 0 {
+		return "  No columns found.\n\n" + helpStyle.Render("  Press 'q' to go back.")
 	}
-	if !m.cfg.LLM.isConfigured() {
-		rows = append(rows, "LLM auto-select is hidden until a usable llm config is present in YAML.")
-	}
-	rows = append(rows, "")
 
-	visible := m.visibleFakeDataRows()
-	start := min(m.fakeDataOffset, max(0, len(m.fakeDataEntries)-1))
-	end := min(len(m.fakeDataEntries), start+visible)
-	for index := start; index < end; index++ {
-		entry := m.fakeDataEntries[index]
-		prefix := "  "
-		if index == m.fakeDataCursor {
-			prefix = "> "
-		}
-		rows = append(rows, fmt.Sprintf("%s%-48s %-18s %s", prefix, entry.Display, entry.TypeName, fakeDataEntrySummary(entry)))
-	}
-	return strings.Join(rows, "\n")
-}
-
-func (m *tuiModel) adjustFakeDataOffset() {
-	visible := m.visibleFakeDataRows()
-	if m.fakeDataCursor < m.fakeDataOffset {
-		m.fakeDataOffset = m.fakeDataCursor
-	}
-	if m.fakeDataCursor >= m.fakeDataOffset+visible {
-		m.fakeDataOffset = m.fakeDataCursor - visible + 1
-	}
-	if m.fakeDataOffset < 0 {
-		m.fakeDataOffset = 0
-	}
-	maxOffset := max(0, len(m.fakeDataEntries)-visible)
-	if m.fakeDataOffset > maxOffset {
-		m.fakeDataOffset = maxOffset
-	}
-}
-
-func (m tuiModel) visibleFakeDataRows() int {
-	return max(8, m.height-8)
+	var b strings.Builder
+	b.WriteString(m.fakeDataTable.View())
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  up/dn navigate  |  enter pick faker  |  x clear  |  a auto-select LLM  |  s/q back"))
+	return b.String()
 }
 
 func (m tuiModel) updateFakerPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	filtered := m.filteredFakeFunctions()
+
 	switch msg.String() {
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
 		m.screen = tuiScreenFakeData
+		m.pickerInput.Blur()
 		m.status = "Canceled faker selection."
+		return m, nil
+	case "up":
+		if m.pickerCursor > 0 {
+			m.pickerCursor--
+		}
 		return m, nil
 	case "down":
 		if m.pickerCursor < len(filtered)-1 {
 			m.pickerCursor++
 		}
-	case "up":
-		if m.pickerCursor > 0 {
-			m.pickerCursor--
-		}
-	case "pgdown":
-		m.pickerCursor = min(len(filtered)-1, m.pickerCursor+m.visiblePickerRows())
-	case "pgup":
-		m.pickerCursor = max(0, m.pickerCursor-m.visiblePickerRows())
-	case "backspace":
-		m.pickerQuery = trimLastRune(m.pickerQuery)
-		m.pickerCursor = 0
-		m.pickerOffset = 0
 		return m, nil
 	case "enter":
-		if len(filtered) == 0 {
-			return m, nil
-		}
-		selected := filtered[m.pickerCursor]
-		if len(selected.Params) == 0 {
+		if m.pickerCursor >= 0 && m.pickerCursor < len(filtered) {
+			selected := filtered[m.pickerCursor]
 			entry := &m.fakeDataEntries[m.pickerTarget]
-			entry.FunctionName = selected.LookupName
-			entry.FunctionDisplay = selected.Display
-			entry.FunctionParams = nil
-			m.screen = tuiScreenFakeData
-			m.status = fmt.Sprintf("Assigned %s to %s.", selected.Display, entry.Display)
-			return m, nil
+			if len(selected.Params) == 0 {
+				entry.FunctionName = selected.LookupName
+				entry.FunctionDisplay = selected.Display
+				entry.FunctionParams = nil
+				m.screen = tuiScreenFakeData
+				m.rebuildFakeDataTable()
+				m.status = fmt.Sprintf("Assigned %s to %s.", selected.Display, entry.Display)
+				return m, nil
+			}
+			m.paramTarget = m.pickerTarget
+			m.paramOption = selected
+			m.paramInput.SetValue(initialParamInput(selected, m.fakeDataEntries[m.pickerTarget]))
+			m.paramInput.Focus()
+			m.screen = tuiScreenFakerParams
+			m.status = fmt.Sprintf("Set parameters for %s.", selected.Display)
 		}
-		m.paramTarget = m.pickerTarget
-		m.paramOption = selected
-		m.paramInput = initialParamInput(selected, m.fakeDataEntries[m.pickerTarget])
-		m.screen = tuiScreenFakerParams
-		m.status = fmt.Sprintf("Set parameters for %s.", selected.Display)
 		return m, nil
-	default:
-		if msg.Key().Text != "" {
-			m.pickerQuery += msg.Key().Text
-			m.pickerCursor = 0
-			m.pickerOffset = 0
-			return m, nil
-		}
 	}
-	m.adjustPickerOffset(len(filtered))
-	return m, nil
+
+	var cmd tea.Cmd
+	m.pickerInput, cmd = m.pickerInput.Update(msg)
+	m.pickerCursor = 0
+	return m, cmd
 }
 
 func (m tuiModel) fakerPickerView() string {
-	filtered := m.filteredFakeFunctions()
-	rows := []string{
-		"Search supported gofakeit functions. Type to filter, enter to apply, esc to cancel.",
-		"Filter: " + m.pickerQuery,
-		"",
-	}
-	if len(filtered) == 0 {
-		rows = append(rows, "No faker matches the current filter.")
-		return strings.Join(rows, "\n")
+	var b strings.Builder
+
+	if m.pickerTarget >= 0 && m.pickerTarget < len(m.fakeDataEntries) {
+		entry := m.fakeDataEntries[m.pickerTarget]
+		b.WriteString(sectionHeaderStyle.Render(fmt.Sprintf("  Column: %s  (%s)", entry.Display, entry.TypeName)))
+		b.WriteString("\n")
 	}
 
-	start := min(m.pickerOffset, max(0, len(filtered)-1))
-	end := min(len(filtered), start+m.visiblePickerRows())
-	for index := start; index < end; index++ {
-		option := filtered[index]
-		prefix := "  "
-		if index == m.pickerCursor {
-			prefix = "> "
-		}
-		rows = append(rows, fmt.Sprintf("%s%-20s %-14s %-3d %s", prefix, option.Display, option.Category, len(option.Params), option.Description))
+	b.WriteString("  " + m.pickerInput.View())
+	b.WriteString("\n\n")
+
+	filtered := m.filteredFakeFunctions()
+	if len(filtered) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  No faker matches the current filter."))
+		return b.String()
 	}
-	return strings.Join(rows, "\n")
+
+	visible := max(8, m.height-12)
+	end := min(visible, len(filtered))
+
+	for i := range end {
+		opt := filtered[i]
+		cursor := "  "
+		if i == m.pickerCursor {
+			cursor = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("> ")
+		}
+		name := lipgloss.NewStyle().Foreground(colorAccent).Width(30).Render(opt.Display)
+		desc := lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%-14s %d params", opt.Category, len(opt.Params)))
+		fmt.Fprintf(&b, "  %s%s %s\n", cursor, name, desc)
+	}
+
+	if end < len(filtered) {
+		more := lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("... and %d more functions", len(filtered)-end))
+		fmt.Fprintf(&b, "\n  %s\n", more)
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  type to filter  |  up/dn navigate  |  enter select  |  esc cancel"))
+	return b.String()
 }
 
 func (m tuiModel) updateFakerParams(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1352,14 +1506,12 @@ func (m tuiModel) updateFakerParams(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.screen = tuiScreenFakeData
+		m.paramInput.Blur()
 		m.status = "Canceled faker parameter editing."
-		return m, nil
-	case "backspace":
-		m.paramInput = trimLastRune(m.paramInput)
 		return m, nil
 	case "enter":
 		entry := &m.fakeDataEntries[m.paramTarget]
-		params := parseFakeParameterInput(m.paramInput)
+		params := parseFakeParameterInput(m.paramInput.Value())
 		functionConfig := buildFakeFunctionConfig(m.paramOption.LookupName, params)
 		if _, _, err := compileFakeDataRule(entry.Selector, functionConfig); err != nil {
 			m.status = err.Error()
@@ -1369,77 +1521,72 @@ func (m tuiModel) updateFakerParams(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		entry.FunctionDisplay = m.paramOption.Display
 		entry.FunctionParams = params
 		m.screen = tuiScreenFakeData
+		m.rebuildFakeDataTable()
 		m.status = fmt.Sprintf("Assigned %s to %s.", m.paramOption.Display, entry.Display)
 		return m, nil
-	default:
-		if msg.Key().Text != "" {
-			m.paramInput += msg.Key().Text
-			return m, nil
-		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.paramInput, cmd = m.paramInput.Update(msg)
+	return m, cmd
 }
 
 func (m tuiModel) fakerParamsView() string {
-	rows := make([]string, 0, 3+len(m.paramOption.Params)+2)
-	rows = append(rows,
-		fmt.Sprintf("Configure parameters for %s (%s).", m.paramOption.Display, m.paramOption.LookupName),
-		"Enter semicolon-separated parameter values in declared order, then press enter to validate and save.",
-		"",
-	)
+	var b strings.Builder
+	b.WriteString(sectionHeaderStyle.Render(fmt.Sprintf("  Configure parameters for %s", m.paramOption.LookupName)))
+	b.WriteString("\n\n")
+
 	for _, param := range m.paramOption.Params {
-		line := fmt.Sprintf("- %s [%s]", param.Field, param.Type)
+		lbl := lipgloss.NewStyle().Foreground(colorAccent).Render(param.Field + " (" + param.Type + ")")
+		extra := ""
 		if param.Optional {
-			line += " optional"
+			extra += " optional"
 		}
 		if param.Default != "" {
-			line += " default=" + param.Default
+			extra += " default=" + param.Default
 		}
 		if len(param.Options) > 0 {
-			line += " options=" + strings.Join(param.Options, ",")
+			extra += " options=" + strings.Join(param.Options, ",")
 		}
-		if param.Description != "" {
-			line += " - " + param.Description
-		}
-		rows = append(rows, line)
+		desc := lipgloss.NewStyle().Foreground(colorMuted).Render(param.Description + extra)
+		fmt.Fprintf(&b, "  %s: %s\n", lbl, desc)
 	}
-	rows = append(rows, "", "Parameters: "+m.paramInput)
-	return strings.Join(rows, "\n")
+
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "  Value: %s\n", m.paramInput.View())
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  Type semicolon-separated parameter values and press enter. Press esc to skip."))
+	return b.String()
 }
 
 func (m tuiModel) filteredFakeFunctions() []fakeFunctionOption {
-	query := strings.TrimSpace(strings.ToLower(m.pickerQuery))
-	if query == "" {
+	var allowedOutputs map[string]bool
+	target := m.pickerTarget
+	if target >= 0 && target < len(m.fakeDataEntries) {
+		outputs := matchingOutputTypes(m.fakeDataEntries[target].TypeName)
+		if len(outputs) > 0 {
+			allowedOutputs = make(map[string]bool, len(outputs))
+			for _, o := range outputs {
+				allowedOutputs[o] = true
+			}
+		}
+	}
+
+	query := strings.TrimSpace(strings.ToLower(m.pickerInput.Value()))
+	if query == "" && allowedOutputs == nil {
 		return m.fakeFunctions
 	}
+
 	filtered := make([]fakeFunctionOption, 0, len(m.fakeFunctions))
 	for _, option := range m.fakeFunctions {
-		if strings.Contains(option.SearchText, query) {
+		if allowedOutputs != nil && !allowedOutputs[option.Output] {
+			continue
+		}
+		if query == "" || strings.Contains(option.SearchText, query) {
 			filtered = append(filtered, option)
 		}
 	}
 	return filtered
-}
-
-func (m *tuiModel) adjustPickerOffset(total int) {
-	visible := m.visiblePickerRows()
-	if m.pickerCursor < m.pickerOffset {
-		m.pickerOffset = m.pickerCursor
-	}
-	if m.pickerCursor >= m.pickerOffset+visible {
-		m.pickerOffset = m.pickerCursor - visible + 1
-	}
-	if m.pickerOffset < 0 {
-		m.pickerOffset = 0
-	}
-	maxOffset := max(0, total-visible)
-	if m.pickerOffset > maxOffset {
-		m.pickerOffset = maxOffset
-	}
-}
-
-func (m tuiModel) visiblePickerRows() int {
-	return max(8, m.height-10)
 }
 
 func (m *tuiModel) syncFakeDataIntoConfig() {
@@ -1661,6 +1808,7 @@ func availableFakeFunctionOptions() []fakeFunctionOption {
 			Description: info.Description,
 			Example:     info.Example,
 			SearchText:  searchText,
+			Output:      info.Output,
 			Params:      slices.Clone(info.Params),
 		})
 	}
@@ -1720,17 +1868,6 @@ func buildFakeFunctionConfig(name string, params []string) string {
 	return name + ";" + strings.Join(params, ";")
 }
 
-func fakeDataEntrySummary(entry tuiFakeDataEntry) string {
-	if entry.FunctionDisplay == "" {
-		return "-"
-	}
-	summary := entry.FunctionDisplay + " (" + entry.FunctionName + ")"
-	if len(entry.FunctionParams) > 0 {
-		summary += "; " + strings.Join(entry.FunctionParams, ";")
-	}
-	return summary
-}
-
 func initialParamInput(option fakeFunctionOption, entry tuiFakeDataEntry) string {
 	if entry.FunctionName == option.LookupName && len(entry.FunctionParams) > 0 {
 		return strings.Join(entry.FunctionParams, ";")
@@ -1785,14 +1922,6 @@ func displayColumnType(col columnMeta) string {
 		return col.TypeSchema + "." + col.UserTypeName
 	}
 	return col.SystemTypeName
-}
-
-func trimLastRune(value string) string {
-	if value == "" {
-		return value
-	}
-	runes := []rune(value)
-	return string(runes[:len(runes)-1])
 }
 
 func parsePositiveIntField(value string, fallback int) (int, error) {
