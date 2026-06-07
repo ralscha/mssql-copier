@@ -428,9 +428,6 @@ func (cfg config) validate() error {
 	if cfg.requiresTarget() && sameSourceAndTargetDatabase(cfg.SourceDSN, cfg.TargetDSN) {
 		return fmt.Errorf("source and target DSNs must not refer to the same database")
 	}
-	if cfg.ExportDDLFile != "" && cfg.ExportDataFile != "" {
-		return fmt.Errorf("-export-ddl cannot be combined with -export-data")
-	}
 	if cfg.ReportMDFile != "" && cfg.Plan {
 		return fmt.Errorf("-report-md cannot be combined with -plan")
 	}
@@ -685,7 +682,9 @@ func (c *copier) run(ctx context.Context) error {
 			return err
 		}
 		log.Printf("wrote DDL export file to %s", c.cfg.ExportDDLFile)
-		return nil
+		if c.cfg.ExportDataFile == "" {
+			return nil
+		}
 	}
 	if c.cfg.ExportDataFile != "" {
 		if err := c.writeDataExportFile(ctx); err != nil {

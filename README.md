@@ -4,27 +4,27 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 
 ## Features
 
-- **Metadata-driven** — discovers tables, alias user-defined types, user-defined table types, sequences, views, functions, stored procedures, DML triggers, synonyms, columns, primary keys, foreign keys, checks, and indexes from the source
-- **Concurrent copying** — copies multiple tables in parallel with configurable worker count
-- **Bulk copy** — uses SQL Server's `COPY IN` (TABLOCK) for compatible column types, falling back to row-by-row `INSERT` when needed
-- **Identity insert** — automatically handles `SET IDENTITY_INSERT ON/OFF`
-- **Object filters** — include/exclude schemas and object names using wildcard patterns (`*`, `%`, `?`, `_`)
-- **Sequence copy** — copies sequences so target-side defaults based on `NEXT VALUE FOR ...` keep working
-- **Alias type copy** — copies alias user-defined types and preserves them in recreated table definitions
-- **Table type copy** — copies user-defined table types so TVP-based procedures can be recreated on the target
-- **Trigger copy** — copies table-scoped DML triggers with rerun-safe `CREATE OR ALTER TRIGGER`
-- **View copy** — copies views with dependency-aware creation order and rerun-safe `CREATE OR ALTER VIEW`
-- **Function copy** — copies SQL functions with dependency-aware creation order and rerun-safe `CREATE OR ALTER FUNCTION`
-- **Stored procedure copy** — copies stored procedures with rerun-safe `CREATE OR ALTER PROCEDURE`
-- **Synonym copy** — copies synonyms with rerun-safe drop-and-create behavior
-- **Plan mode** — preview the execution plan without modifying the target
-- **Flyway export mode** — writes an initial Flyway-ready SQL baseline file for the discovered schema objects
-- **Markdown copy report** — writes a post-run markdown summary with per-table copied row counts and run highlights
-- **Drop-existing mode** — optionally drop matching target tables before recreating them
-- **Fake data replacement** — replace configured column values during copy and data export using `gofakeit`
-- **Terminal UI** — interactive Bubble Tea mode for entering source/target settings, include/exclude filters, exporting YAML config, and editing exact per-column fake-data rules
-- **Post-data objects** — creates primary keys, checks, foreign keys, and indexes after data is loaded
-- **Integration tested** — includes testcontainers-based integration tests
+- **Metadata-driven** - discovers tables, alias user-defined types, user-defined table types, sequences, views, functions, stored procedures, DML triggers, synonyms, columns, primary keys, foreign keys, checks, and indexes from the source
+- **Concurrent copying** - copies multiple tables in parallel with configurable worker count
+- **Bulk copy** - uses SQL Server's `COPY IN` (TABLOCK) for compatible column types, falling back to row-by-row `INSERT` when needed
+- **Identity insert** - automatically handles `SET IDENTITY_INSERT ON/OFF`
+- **Object filters** - include/exclude schemas and object names using wildcard patterns (`*`, `%`, `?`, `_`)
+- **Sequence copy** - copies sequences so target-side defaults based on `NEXT VALUE FOR ...` keep working
+- **Alias type copy** - copies alias user-defined types and preserves them in recreated table definitions
+- **Table type copy** - copies user-defined table types so TVP-based procedures can be recreated on the target
+- **Trigger copy** - copies table-scoped DML triggers with rerun-safe `CREATE OR ALTER TRIGGER`
+- **View copy** - copies views with dependency-aware creation order and rerun-safe `CREATE OR ALTER VIEW`
+- **Function copy** - copies SQL functions with dependency-aware creation order and rerun-safe `CREATE OR ALTER FUNCTION`
+- **Stored procedure copy** - copies stored procedures with rerun-safe `CREATE OR ALTER PROCEDURE`
+- **Synonym copy** - copies synonyms with rerun-safe drop-and-create behavior
+- **Plan mode** - preview the execution plan without modifying the target
+- **DDL export mode** - writes an ordered SQL baseline file for the discovered schema objects
+- **Markdown copy report** - writes a post-run markdown summary with per-table copied row counts and run highlights
+- **Drop-existing mode** - optionally drop matching target tables before recreating them
+- **Fake data replacement** - replace configured column values during copy and data export using `gofakeit`
+- **Terminal UI** - interactive Bubble Tea mode for entering source/target settings, include/exclude filters, exporting YAML config, and editing exact per-column fake-data rules
+- **Post-data objects** - creates primary keys, checks, foreign keys, and indexes after data is loaded
+- **Integration tested** - includes testcontainers-based integration tests
 
 ## Usage
 
@@ -56,7 +56,7 @@ Preview which objects would be copied without touching a target. In the TUI, swi
 
 ### DDL export
 
-Write a source-only DDL baseline file for the selected schema objects. In the TUI, switch to `ddl` mode and fill in the DDL export path. The generated file is plain ordered SQL, so it can be used directly as a Flyway baseline migration. This mode exports DDL only; it does not export table data.
+Write a source-only DDL baseline file for the selected schema objects. In the TUI, switch to `ddl` mode and fill in the DDL export path. The generated file is ordered SQL with per-object changeset comments. This mode exports DDL only; it does not export table data.
 
 The generated file contains ordered SQL statements for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `drop-existing` is not supported with this mode and is hidden in the TUI.
 
@@ -175,6 +175,15 @@ llm:
   base-url: https://api.openai.com/v1
 ```
 
+For a non-interactive `ddl+data` export, set both output paths:
+
+```yaml
+source: sqlserver://user:pass@source-host:1433?database=SourceDB
+export-ddl: ./export/schema.sql
+export-data: ./export/data.sql
+export-data-rows: 25
+```
+
 ### Fake data replacement
 
 Configured fake-data rules are applied in both copy mode and `ddl+data` mode before values are written to the target or serialized into SQL inserts.
@@ -214,29 +223,29 @@ sqlserver://user:password@host:1433?database=MyDB&encrypt=true&trustservercertif
 ### Wildcard patterns
 
 Filter arguments support SQL-style and glob-style wildcards:
-- `*` or `%` — matches any sequence of characters
-- `?` or `_` — matches exactly one character
+- `*` or `%` - matches any sequence of characters
+- `?` or `_` - matches exactly one character
 
 Examples: `sales*`, `dbo.%`, `audit_202?`, `*_archive`
 
 ## How it works
 
-1. **Discover** — queries `sys.tables`, `sys.types`, `sys.table_types`, `sys.sequences`, `sys.views`, `sys.objects`, `sys.procedures`, `sys.triggers`, `sys.synonyms`, `sys.columns`, `sys.indexes`, and other system catalog views on the source to build metadata for copied objects
-2. **Filter** — applies include/exclude rules against schema names and object names
-3. **Plan** (optional) — prints the planned actions and exits
-4. **Create schemas** — creates any missing non-`dbo` schemas needed by copied objects on the target
-5. **Prepare target** — optionally drops existing target tables
-6. **Create alias types** — creates copied alias user-defined types before tables are recreated
-7. **Create table types** — creates copied user-defined table types before dependent procedures are recreated
-8. **Create sequences** — creates or updates copied sequences before tables are created
-9. **Create tables** — generates and executes `CREATE TABLE` statements from source column definitions (including defaults, computed columns, collations, and preserved alias types)
-10. **Copy data** — distributes tables across worker goroutines; each table is copied in a single transaction using bulk copy or row-insert depending on column type compatibility
-11. **Post-data objects** — creates primary keys, check constraints, foreign keys, and indexes
-12. **Create views** — creates or updates copied views in dependency order
-13. **Create functions** — creates or updates copied SQL functions in dependency order
-14. **Create synonyms** — recreates copied synonyms after referenced objects are in place
-15. **Create procedures** — creates or updates copied stored procedures after their copied dependencies are in place
-16. **Create triggers** — creates or updates copied table-scoped DML triggers after tables, procedures, and synonyms are in place
+1. **Discover** - queries `sys.tables`, `sys.types`, `sys.table_types`, `sys.sequences`, `sys.views`, `sys.objects`, `sys.procedures`, `sys.triggers`, `sys.synonyms`, `sys.columns`, `sys.indexes`, and other system catalog views on the source to build metadata for copied objects
+2. **Filter** - applies include/exclude rules against schema names and object names
+3. **Plan** (optional) - prints the planned actions and exits
+4. **Create schemas** - creates any missing non-`dbo` schemas needed by copied objects on the target
+5. **Prepare target** - optionally drops existing target tables
+6. **Create alias types** - creates copied alias user-defined types before tables are recreated
+7. **Create table types** - creates copied user-defined table types before dependent procedures are recreated
+8. **Create sequences** - creates or updates copied sequences before tables are created
+9. **Create tables** - generates and executes `CREATE TABLE` statements from source column definitions (including defaults, computed columns, collations, and preserved alias types)
+10. **Copy data** - distributes tables across worker goroutines; each table is copied in a single transaction using bulk copy or row-insert depending on column type compatibility
+11. **Post-data objects** - creates primary keys, check constraints, foreign keys, and indexes
+12. **Create views** - creates or updates copied views in dependency order
+13. **Create functions** - creates or updates copied SQL functions in dependency order
+14. **Create synonyms** - recreates copied synonyms after referenced objects are in place
+15. **Create procedures** - creates or updates copied stored procedures after their copied dependencies are in place
+16. **Create triggers** - creates or updates copied table-scoped DML triggers after tables, procedures, and synonyms are in place
 
 ### Bulk vs. row-insert
 

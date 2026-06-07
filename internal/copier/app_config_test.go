@@ -333,6 +333,9 @@ func TestConfigValidateExportDataRows(t *testing.T) {
 	if err := (config{ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
 		t.Fatalf("expected export-data row limit to validate, got %v", err)
 	}
+	if err := (config{ExportDDLFile: "schema.sql", ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
+		t.Fatalf("expected combined ddl+data export to validate, got %v", err)
+	}
 	if err := (config{ReportMDFile: "copy-report.md"}).validate(); err != nil {
 		t.Fatalf("expected report markdown config to validate, got %v", err)
 	}
