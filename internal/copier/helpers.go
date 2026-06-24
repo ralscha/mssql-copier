@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	mssql "github.com/denisenkom/go-mssqldb"
 )
 
 func parseBCPErrorColID(errMsg string) int {
@@ -175,6 +177,11 @@ func normalizeValue(value any, col columnMeta) any {
 	}
 	switch v := value.(type) {
 	case []byte:
+		if col.SystemTypeName == "uniqueidentifier" {
+			if uid, ok := parseUniqueIdentifier(v); ok {
+				return uid
+			}
+		}
 		if col.SystemTypeName == "decimal" || col.SystemTypeName == "numeric" || col.SystemTypeName == "money" || col.SystemTypeName == "smallmoney" {
 			return string(v)
 		}
@@ -188,6 +195,11 @@ func normalizeValue(value any, col columnMeta) any {
 		copy(copyBytes, v)
 		return copyBytes
 	case string:
+		if col.SystemTypeName == "uniqueidentifier" {
+			if uid, ok := parseUniqueIdentifier(v); ok {
+				return uid
+			}
+		}
 		// Parse datetime strings into time.Time for bulk copy compatibility
 		if isDateTimeType(col.SystemTypeName) {
 			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
@@ -213,6 +225,14 @@ func normalizeValue(value any, col columnMeta) any {
 	default:
 		return v
 	}
+}
+
+func parseUniqueIdentifier(value any) (mssql.UniqueIdentifier, bool) {
+	var uid mssql.UniqueIdentifier
+	if err := uid.Scan(value); err != nil {
+		return mssql.UniqueIdentifier{}, false
+	}
+	return uid, true
 }
 
 func isDateTimeType(typeName string) bool {

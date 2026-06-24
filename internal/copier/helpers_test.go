@@ -3,6 +3,8 @@ package copier
 import (
 	"testing"
 	"time"
+
+	mssql "github.com/denisenkom/go-mssqldb"
 )
 
 func TestWildcardMatch(t *testing.T) {
@@ -272,6 +274,34 @@ func TestNormalizeValue(t *testing.T) {
 	got = normalizeValue(int64(42), columnMeta{SystemTypeName: "int"})
 	if got != int64(42) {
 		t.Fatalf("expected int64 to pass through, got %v", got)
+	}
+
+	// uniqueidentifier string -> mssql.UniqueIdentifier for bulk copy compatibility
+	col = columnMeta{SystemTypeName: "uniqueidentifier"}
+	got = normalizeValue("625d972b-fb1e-4899-9f21-d3353eb8b20b", col)
+	uid, ok := got.(mssql.UniqueIdentifier)
+	if !ok {
+		t.Fatalf("expected uniqueidentifier string to become mssql.UniqueIdentifier, got %T: %v", got, got)
+	}
+	if uid.String() != "625d972b-fb1e-4899-9f21-d3353eb8b20b" {
+		t.Fatalf("uniqueidentifier string normalized to %q", uid.String())
+	}
+
+	// uniqueidentifier raw bytes -> mssql.UniqueIdentifier
+	raw := []byte{0x2b, 0x97, 0x5d, 0x62, 0x1e, 0xfb, 0x99, 0x48, 0x9f, 0x21, 0xd3, 0x35, 0x3e, 0xb8, 0xb2, 0x0b}
+	got = normalizeValue(raw, col)
+	uid, ok = got.(mssql.UniqueIdentifier)
+	if !ok {
+		t.Fatalf("expected uniqueidentifier bytes to become mssql.UniqueIdentifier, got %T: %v", got, got)
+	}
+	if uid.String() != "625d972b-fb1e-4899-9f21-d3353eb8b20b" {
+		t.Fatalf("uniqueidentifier bytes normalized to %q", uid.String())
+	}
+
+	// invalid uniqueidentifier string passes through
+	got = normalizeValue("not-a-guid", col)
+	if got != "not-a-guid" {
+		t.Fatalf("expected invalid uniqueidentifier string to pass through, got %T: %v", got, got)
 	}
 
 	// datetime string (RFC3339) -> time.Time
