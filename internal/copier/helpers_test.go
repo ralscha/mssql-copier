@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -283,7 +284,7 @@ func TestNormalizeValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected uniqueidentifier string to become mssql.UniqueIdentifier, got %T: %v", got, got)
 	}
-	if uid.String() != "625d972b-fb1e-4899-9f21-d3353eb8b20b" {
+	if !strings.EqualFold(uid.String(), "625d972b-fb1e-4899-9f21-d3353eb8b20b") {
 		t.Fatalf("uniqueidentifier string normalized to %q", uid.String())
 	}
 
@@ -294,7 +295,7 @@ func TestNormalizeValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected uniqueidentifier bytes to become mssql.UniqueIdentifier, got %T: %v", got, got)
 	}
-	if uid.String() != "625d972b-fb1e-4899-9f21-d3353eb8b20b" {
+	if !strings.EqualFold(uid.String(), "625d972b-fb1e-4899-9f21-d3353eb8b20b") {
 		t.Fatalf("uniqueidentifier bytes normalized to %q", uid.String())
 	}
 
