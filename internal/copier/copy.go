@@ -3,6 +3,7 @@ package copier
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -494,6 +495,11 @@ func (c *copier) createPostDataObjects(ctx context.Context) error {
 		}
 		for _, index := range table.Indexes {
 			if _, err := c.targetDB.ExecContext(ctx, table.IndexSQL(index)); err != nil {
+				if isDuplicateKeyUniqueIndexError(index, err) {
+					log.Printf("WARNING: skipping unique index %s.%s because target data contains duplicate key values: %v", table.FQTN(), index.Name, err)
+					c.report.recordSkippedIndex(table, index, err)
+					continue
+				}
 				return fmt.Errorf("create index %s.%s: %w", table.FQTN(), index.Name, err)
 			}
 		}
@@ -525,6 +531,25 @@ func (c *copier) createPostDataObjects(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func isDuplicateKeyUniqueIndexError(index indexMeta, err error) bool {
+	if !index.Unique {
+		return false
+	}
+	var sqlErr mssql.Error
+	if !errors.As(err, &sqlErr) {
+		return false
+	}
+	if sqlErr.Number == 1505 {
+		return true
+	}
+	for _, nested := range sqlErr.All {
+		if nested.Number == 1505 {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *copier) targetTableExists(ctx context.Context, schemaName string, tableName string) (bool, error) {

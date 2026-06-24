@@ -1,8 +1,11 @@
 package copier
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	mssql "github.com/denisenkom/go-mssqldb"
 )
 
 func TestTopologicalSortViews(t *testing.T) {
@@ -42,6 +45,25 @@ func TestTopologicalSortViews(t *testing.T) {
 	}
 	if positions["[reporting].[order_names]"] > positions["[reporting].[order_names_filtered]"] {
 		t.Fatalf("expected order_names before order_names_filtered, got %v", positions)
+	}
+}
+
+func TestIsDuplicateKeyUniqueIndexError(t *testing.T) {
+	uniqueIndex := indexMeta{Name: "IX_users_name", Unique: true}
+
+	err := fmt.Errorf("create index: %w", mssql.Error{Number: 1505, Message: "duplicate key"})
+	if !isDuplicateKeyUniqueIndexError(uniqueIndex, err) {
+		t.Fatal("expected duplicate key error for unique index to be skippable")
+	}
+
+	nonUniqueIndex := indexMeta{Name: "IX_users_name", Unique: false}
+	if isDuplicateKeyUniqueIndexError(nonUniqueIndex, err) {
+		t.Fatal("expected duplicate key error for non-unique index to remain fatal")
+	}
+
+	otherErr := mssql.Error{Number: 1919, Message: "invalid column type"}
+	if isDuplicateKeyUniqueIndexError(uniqueIndex, otherErr) {
+		t.Fatal("expected non-duplicate unique index error to remain fatal")
 	}
 }
 

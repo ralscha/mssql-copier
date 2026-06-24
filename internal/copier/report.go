@@ -11,8 +11,9 @@ import (
 )
 
 type copyReport struct {
-	mu     sync.Mutex
-	tables map[string]tableCopyReport
+	mu             sync.Mutex
+	tables         map[string]tableCopyReport
+	skippedIndexes []skippedIndexReport
 }
 
 type tableCopyReport struct {
@@ -26,6 +27,13 @@ type tableCopyReport struct {
 	HasIdentity        bool
 	NoCopyableColumns  bool
 	BulkFallbackReason string
+}
+
+type skippedIndexReport struct {
+	Table string
+	Index string
+	SQL   string
+	Error string
 }
 
 func (r *copyReport) record(table tableMeta, rowsCopied int64, duration time.Duration) {
@@ -55,6 +63,17 @@ func (r *copyReport) record(table tableMeta, rowsCopied int64, duration time.Dur
 	r.tables[strings.ToLower(report.Table)] = report
 }
 
+func (r *copyReport) recordSkippedIndex(table tableMeta, index indexMeta, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skippedIndexes = append(r.skippedIndexes, skippedIndexReport{
+		Table: table.FQTN(),
+		Index: index.Name,
+		SQL:   table.IndexSQL(index),
+		Error: err.Error(),
+	})
+}
+
 func (c *copier) writeMarkdownReport(runDuration time.Duration) error {
 	if c.cfg.ReportMDFile == "" {
 		return nil
@@ -69,6 +88,7 @@ func (c *copier) writeMarkdownReport(runDuration time.Duration) error {
 
 func (c *copier) markdownReport(runDuration time.Duration) string {
 	reports := c.report.snapshot(c.tables)
+	skippedIndexes := c.report.skippedIndexSnapshot()
 	type highlight struct {
 		table string
 		rows  int64
@@ -118,6 +138,7 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 	fmt.Fprintf(&builder, "| Skipped tables | %d |\n", skippedTables)
 	fmt.Fprintf(&builder, "| Zero-row tables | %d |\n", zeroRowTables)
 	fmt.Fprintf(&builder, "| Identity tables | %d |\n", identityTables)
+	fmt.Fprintf(&builder, "| Skipped indexes | %d |\n", len(skippedIndexes))
 	fmt.Fprintf(&builder, "| Run duration | %s |\n", runDuration.Round(time.Millisecond))
 
 	builder.WriteString("\n## Highlights\n\n")
@@ -130,6 +151,9 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 	}
 	if rowInsertTables > 0 {
 		fmt.Fprintf(&builder, "- %d table(s) used row inserts instead of bulk copy\n", rowInsertTables)
+	}
+	if len(skippedIndexes) > 0 {
+		fmt.Fprintf(&builder, "- %d unique index(es) were skipped because copied data contains duplicate key values\n", len(skippedIndexes))
 	}
 
 	builder.WriteString("\n## Tables\n\n")
@@ -151,6 +175,20 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 		builder.WriteString(" | ")
 		builder.WriteString(report.notes())
 		builder.WriteString(" |\n")
+	}
+
+	if len(skippedIndexes) > 0 {
+		builder.WriteString("\n## Skipped Indexes\n\n")
+		builder.WriteString("| Table | Index | Reason |\n")
+		builder.WriteString("| --- | --- | --- |\n")
+		for _, skipped := range skippedIndexes {
+			builder.WriteString("| ")
+			builder.WriteString(skipped.Table)
+			builder.WriteString(" | ")
+			builder.WriteString(skipped.Index)
+			builder.WriteString(" | duplicate key values prevented unique index creation |")
+			builder.WriteString("\n")
+		}
 	}
 
 	return builder.String()
@@ -181,6 +219,18 @@ func (r *copyReport) snapshot(tables []tableMeta) []tableCopyReport {
 	return reports
 }
 
+func (r *copyReport) skippedIndexSnapshot() []skippedIndexReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	skipped := append([]skippedIndexReport(nil), r.skippedIndexes...)
+	sort.Slice(skipped, func(i, j int) bool {
+		left := strings.ToLower(skipped[i].Table + "." + skipped[i].Index)
+		right := strings.ToLower(skipped[j].Table + "." + skipped[j].Index)
+		return left < right
+	})
+	return skipped
+}
+
 func (r tableCopyReport) notes() string {
 	var notes []string
 	if r.NoCopyableColumns {
@@ -196,4 +246,10 @@ func (r tableCopyReport) notes() string {
 		return "-"
 	}
 	return strings.Join(notes, "; ")
+}
+
+func (c *copier) logSkippedIndexSummary() {
+	for _, skipped := range c.report.skippedIndexSnapshot() {
+		log.Printf("WARNING: skipped index missing on target: %s.%s (duplicate key values prevented unique index creation)", skipped.Table, skipped.Index)
+	}
 }

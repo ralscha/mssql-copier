@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,13 @@ func TestMarkdownReportIncludesSummaryAndTableRows(t *testing.T) {
 
 	c.report.record(c.tables[0], 12, 2*time.Second)
 	c.report.record(c.tables[1], 0, 10*time.Millisecond)
+	c.report.recordSkippedIndex(c.tables[0], indexMeta{
+		Name:   "IX_orders_status",
+		Unique: true,
+		KeyColumns: []keyColumn{
+			{Name: "status"},
+		},
+	}, errDuplicateKeyForTest())
 
 	report := c.markdownReport(3 * time.Second)
 
@@ -40,12 +48,20 @@ func TestMarkdownReportIncludesSummaryAndTableRows(t *testing.T) {
 		"# Copy Report",
 		"| Selected tables | 2 |",
 		"| Total rows copied | 12 |",
+		"| Skipped indexes | 1 |",
 		"Largest copied table: [dbo].[orders] with 12 rows",
+		"1 unique index(es) were skipped because copied data contains duplicate key values",
 		"| [dbo].[orders] | 12 | 11 | 2/2 | bulk | 2s | identity insert |",
 		"| [sales].[audit_log] | 0 | 3 | 0/1 | skipped | 10ms | no copyable columns |",
+		"## Skipped Indexes",
+		"| [dbo].[orders] | IX_orders_status | duplicate key values prevented unique index creation |",
 	} {
 		if !strings.Contains(report, want) {
 			t.Fatalf("report missing %q:\n%s", want, report)
 		}
 	}
+}
+
+func errDuplicateKeyForTest() error {
+	return errors.New("mssql: The CREATE UNIQUE INDEX statement terminated because a duplicate key was found")
 }

@@ -733,6 +733,7 @@ func (c *copier) run(ctx context.Context) error {
 	if err := c.createTriggers(ctx); err != nil {
 		return err
 	}
+	c.logSkippedIndexSummary()
 	if err := c.writeMarkdownReport(time.Since(start)); err != nil {
 		return err
 	}
