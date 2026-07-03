@@ -4,10 +4,10 @@ go 1.26.4
 
 require (
 	charm.land/bubbles/v2 v2.1.0
-	charm.land/bubbletea/v2 v2.0.7
-	charm.land/lipgloss/v2 v2.0.4
+	charm.land/bubbletea/v2 v2.0.8
+	charm.land/lipgloss/v2 v2.0.5
 	github.com/brianvoe/gofakeit/v7 v7.15.0
-	github.com/cloudwego/eino v0.9.10
+	github.com/cloudwego/eino v0.9.12
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -27,7 +27,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260622092850-f39628c8a989 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
@@ -59,7 +59,7 @@ require (
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
