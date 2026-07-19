@@ -130,6 +130,8 @@ func TestWritePersistedConfigStripsPassword(t *testing.T) {
 		TargetDSN:  "server=target.example.com;user id=sa;password=hunter2;database=TargetDB",
 		Workers:    2,
 		BatchSize:  5000,
+		LLM:        llmConfig{Provider: "openai", Model: "gpt-4o-mini", APIKey: "literal-llm-secret"},
+		Docker:     dockerTargetConfig{Enabled: true, Port: 1433, SAPassword: "docker-sa-secret"},
 	}
 
 	if err := writePersistedConfig(path, cfg); err != nil {
@@ -146,6 +148,22 @@ func TestWritePersistedConfigStripsPassword(t *testing.T) {
 	}
 	if strings.Contains(content, "hunter2") {
 		t.Fatal("exported config contains target password")
+	}
+	if strings.Contains(content, "literal-llm-secret") {
+		t.Fatal("exported config contains literal LLM API key")
+	}
+	if strings.Contains(content, "docker-sa-secret") {
+		t.Fatal("exported config contains Docker SA password")
+	}
+
+	yamlCfg, _, err := loadYAMLConfig(path, true)
+	if err != nil {
+		t.Fatalf("reload exported config: %v", err)
+	}
+	var reloaded config
+	yamlCfg.applyTo(&reloaded)
+	if reloaded.LLM.APIKey != "" || reloaded.Docker.SAPassword != "" {
+		t.Fatalf("exported config reloaded secrets: llm=%q docker=%q", reloaded.LLM.APIKey, reloaded.Docker.SAPassword)
 	}
 }
 

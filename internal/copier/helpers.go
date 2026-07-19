@@ -111,6 +111,25 @@ func (c *copier) shouldCopyTable(schemaName string, tableName string) bool {
 	return true
 }
 
+func (c *copier) isExplicitlyExcluded(schemaName string, objectName string) bool {
+	normalizedSchema := normalizeFilterName(schemaName)
+	normalizedObject := normalizeFilterName(objectName)
+	fullName := normalizedSchema + "." + normalizedObject
+	return matchesAny(c.cfg.ExcludeSchemas, normalizedSchema) ||
+		matchesAny(c.cfg.ExcludeTables, normalizedObject) ||
+		matchesAny(c.cfg.ExcludeTables, fullName)
+}
+
+func (c *copier) dataTables() []tableMeta {
+	tables := make([]tableMeta, 0, len(c.tables))
+	for _, table := range c.tables {
+		if !table.DependencyOnly {
+			tables = append(tables, table)
+		}
+	}
+	return tables
+}
+
 func matchesAny(values []string, candidate string) bool {
 	for _, value := range values {
 		if wildcardMatch(value, candidate) {

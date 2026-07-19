@@ -1,19 +1,22 @@
 package copier
 
 type tableMeta struct {
-	Schema      string
-	Name        string
-	ObjectID    int
-	ApproxRows  int64
-	Columns     []columnMeta
-	CopyColumns []columnMeta
-	PrimaryKey  *keyConstraint
-	Checks      []checkConstraint
-	ForeignKeys []foreignKey
-	Indexes     []indexMeta
-	HasIdentity bool
-	BulkOK      bool
-	BulkReason  string
+	Schema            string
+	Name              string
+	ObjectID          int
+	ApproxRows        int64
+	DependsOn         []string
+	Columns           []columnMeta
+	CopyColumns       []columnMeta
+	PrimaryKey        *keyConstraint
+	Checks            []checkConstraint
+	ForeignKeys       []foreignKey
+	Indexes           []indexMeta
+	HasIdentity       bool
+	BulkOK            bool
+	BulkReason        string
+	DependencyOnly    bool
+	TargetPreexisting bool
 }
 
 type columnMeta struct {

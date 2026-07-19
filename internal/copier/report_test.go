@@ -62,6 +62,27 @@ func TestMarkdownReportIncludesSummaryAndTableRows(t *testing.T) {
 	}
 }
 
+func TestMarkdownReportRecordsBulkFallbackAsRowInsert(t *testing.T) {
+	table := tableMeta{
+		Schema:      "dbo",
+		Name:        "orders",
+		Columns:     []columnMeta{{Name: "id"}},
+		CopyColumns: []columnMeta{{Name: "id"}},
+		BulkOK:      false,
+		BulkReason:  "flush bulk [dbo].[orders]: protocol error",
+	}
+	c := &copier{tables: []tableMeta{table}}
+	c.report.record(table, 3, time.Second)
+
+	report := c.markdownReport(time.Second)
+	if !strings.Contains(report, "| [dbo].[orders] | 3 | 0 | 1/1 | row-insert |") {
+		t.Fatalf("fallback table was not reported as row-insert:\n%s", report)
+	}
+	if !strings.Contains(report, "bulk fallback: flush bulk [dbo].[orders]: protocol error") {
+		t.Fatalf("fallback reason missing from report:\n%s", report)
+	}
+}
+
 func errDuplicateKeyForTest() error {
 	return errors.New("mssql: The CREATE UNIQUE INDEX statement terminated because a duplicate key was found")
 }

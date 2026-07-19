@@ -94,6 +94,7 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 		"CREATE OR ALTER FUNCTION [sales].[fn_order_count] () RETURNS int AS BEGIN RETURN (SELECT COUNT(*) FROM [sales].[orders]) END",
 		"CREATE SYNONYM [sales].[orders_alias] FOR [sales].[orders];",
 		"CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders] AS BEGIN SELECT 1 END",
+		"CREATE OR ALTER TRIGGER [sales].[trg_orders_audit] ON [sales].[orders] AFTER INSERT AS BEGIN SELECT 1 END\nGO\nDISABLE TRIGGER",
 		"DISABLE TRIGGER [sales].[trg_orders_audit] ON [sales].[orders];",
 	}
 	for _, want := range wants {
@@ -102,8 +103,14 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(got, "--changeset ") {
-		t.Fatalf("expected changeset markers in DDL export, got:\n%s", got)
+	if !strings.HasPrefix(got, "-- mssql-copier Flyway SQL Server baseline\n") {
+		t.Fatalf("expected Flyway header in DDL export, got:\n%s", got)
+	}
+	if strings.Contains(got, "--changeset ") || strings.Contains(got, "splitStatements") {
+		t.Fatalf("expected Flyway SQL rather than Liquibase changesets, got:\n%s", got)
+	}
+	if !strings.Contains(got, "\nGO\n") {
+		t.Fatalf("expected SQL Server GO batch delimiters, got:\n%s", got)
 	}
 
 	if strings.Contains(got, "FK_orders_external") {
@@ -123,10 +130,10 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 	}
 
 	assertOrder("CREATE TYPE [sales].[order_code]", "CREATE TABLE [sales].[customers]")
-	assertOrder("CREATE TABLE [sales].[orders]", "ALTER TABLE [sales].[orders] ADD CONSTRAINT [PK_orders]")
-	assertOrder("ALTER TABLE [sales].[orders] WITH CHECK ADD CONSTRAINT [FK_orders_customers]", "CREATE OR ALTER VIEW [sales].[v_orders]")
+	assertOrder("CREATE TABLE [sales].[orders]", "CREATE OR ALTER VIEW [sales].[v_orders]")
 	assertOrder("CREATE OR ALTER VIEW [sales].[v_orders]", "CREATE OR ALTER FUNCTION [sales].[fn_order_count]")
 	assertOrder("CREATE OR ALTER FUNCTION [sales].[fn_order_count]", "CREATE SYNONYM [sales].[orders_alias]")
 	assertOrder("CREATE SYNONYM [sales].[orders_alias]", "CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders]")
-	assertOrder("CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders]", "CREATE OR ALTER TRIGGER [sales].[trg_orders_audit]")
+	assertOrder("CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders]", "ALTER TABLE [sales].[orders] ADD CONSTRAINT [PK_orders]")
+	assertOrder("ALTER TABLE [sales].[orders] WITH CHECK ADD CONSTRAINT [FK_orders_customers]", "CREATE OR ALTER TRIGGER [sales].[trg_orders_audit]")
 }

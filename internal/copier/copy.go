@@ -125,6 +125,9 @@ func (c *copier) prepareTargetTables(ctx context.Context) error {
 		return err
 	}
 	for _, table := range c.tables {
+		if table.DependencyOnly {
+			continue
+		}
 		if c.cfg.Verbose {
 			log.Printf("dropping existing target table %s if present", table.FQTN())
 		}
@@ -136,22 +139,84 @@ func (c *copier) prepareTargetTables(ctx context.Context) error {
 	return nil
 }
 
-func (c *copier) createTables(ctx context.Context) error {
-	for _, table := range c.tables {
-		createSQL, err := table.CreateTableSQL()
-		if err != nil {
-			return err
+func (c *copier) createTable(ctx context.Context, table *tableMeta) error {
+	if table.DependencyOnly {
+		var exists int
+		if err := c.targetDB.QueryRowContext(ctx, "SELECT CASE WHEN OBJECT_ID(@p1, 'U') IS NULL THEN 0 ELSE 1 END", table.FQTN()).Scan(&exists); err != nil {
+			return fmt.Errorf("check dependency table %s on target: %w", table.FQTN(), err)
 		}
-		if c.cfg.Verbose {
-			log.Printf("creating %s", table.FQTN())
-		}
-		if _, err := c.targetDB.ExecContext(ctx, createSQL); err != nil {
-			return fmt.Errorf("create %s: %w", table.FQTN(), err)
-		}
-		for _, col := range table.Columns {
-			if col.SkipReason != "" && c.cfg.Verbose {
-				log.Printf("%s: skipping source writes for column %s (%s)", table.FQTN(), col.Name, col.SkipReason)
+		if exists != 0 {
+			table.TargetPreexisting = true
+			if c.cfg.Verbose {
+				log.Printf("using existing dependency table %s", table.FQTN())
 			}
+			return nil
+		}
+	}
+
+	createSQL, err := table.CreateTableSQL()
+	if err != nil {
+		return err
+	}
+	if c.cfg.Verbose {
+		log.Printf("creating %s", table.FQTN())
+	}
+	if _, err := c.targetDB.ExecContext(ctx, createSQL); err != nil {
+		return fmt.Errorf("create %s: %w", table.FQTN(), err)
+	}
+	for _, col := range table.Columns {
+		if col.SkipReason != "" && c.cfg.Verbose {
+			log.Printf("%s: skipping source writes for column %s (%s)", table.FQTN(), col.Name, col.SkipReason)
+		}
+	}
+	return nil
+}
+
+func (c *copier) createSchemaObjects(ctx context.Context) error {
+	ordered, err := c.schemaCreationOrder()
+	if err != nil {
+		return fmt.Errorf("schema dependency resolution: %w", err)
+	}
+	for _, object := range ordered {
+		switch object.kind {
+		case "table":
+			if err := c.createTable(ctx, &c.tables[object.index]); err != nil {
+				return err
+			}
+		case "view":
+			item := c.views[object.index]
+			if c.cfg.Verbose {
+				log.Printf("creating view %s", item.FQTN())
+			}
+			if _, err := c.targetDB.ExecContext(ctx, item.CreateViewSQL()); err != nil {
+				return fmt.Errorf("create view %s: %w", item.FQTN(), err)
+			}
+		case "function":
+			item := c.functions[object.index]
+			if c.cfg.Verbose {
+				log.Printf("creating function %s", item.FQTN())
+			}
+			if _, err := c.targetDB.ExecContext(ctx, item.CreateFunctionSQL()); err != nil {
+				return fmt.Errorf("create function %s: %w", item.FQTN(), err)
+			}
+		case "synonym":
+			item := c.synonyms[object.index]
+			if c.cfg.Verbose {
+				log.Printf("creating synonym %s", item.FQTN())
+			}
+			if _, err := c.targetDB.ExecContext(ctx, item.CreateSynonymSQL()); err != nil {
+				return fmt.Errorf("create synonym %s: %w", item.FQTN(), err)
+			}
+		case "procedure":
+			item := c.procedures[object.index]
+			if c.cfg.Verbose {
+				log.Printf("creating procedure %s", item.FQTN())
+			}
+			if _, err := c.targetDB.ExecContext(ctx, item.CreateProcedureSQL()); err != nil {
+				return fmt.Errorf("create procedure %s: %w", item.FQTN(), err)
+			}
+		default:
+			return fmt.Errorf("unsupported schema object kind %q", object.kind)
 		}
 	}
 	return nil
@@ -160,6 +225,9 @@ func (c *copier) createTables(ctx context.Context) error {
 func (c *copier) dropTargetForeignKeys(ctx context.Context) error {
 	seen := map[string]struct{}{}
 	for _, table := range c.tables {
+		if table.DependencyOnly {
+			continue
+		}
 		fks, err := c.listTargetForeignKeys(ctx, table)
 		if err != nil {
 			return err
@@ -216,6 +284,7 @@ WHERE fk.parent_object_id = OBJECT_ID(@p1)
 }
 
 func (c *copier) copyTableData(ctx context.Context) error {
+	tables := c.dataTables()
 	var completed atomic.Int32
 	jobs := make(chan tableMeta)
 	errCh := make(chan error, 1)
@@ -223,8 +292,8 @@ func (c *copier) copyTableData(ctx context.Context) error {
 	defer cancel()
 
 	workerCount := c.cfg.Workers
-	if workerCount > len(c.tables) && len(c.tables) > 0 {
-		workerCount = len(c.tables)
+	if workerCount > len(tables) && len(tables) > 0 {
+		workerCount = len(tables)
 	}
 	if workerCount == 0 {
 		return nil
@@ -247,13 +316,13 @@ func (c *copier) copyTableData(ctx context.Context) error {
 					return
 				}
 				n := completed.Add(1)
-				log.Printf("copied %s rows=%d (%d/%d)", table.FQTN(), rowsCopied, n, len(c.tables))
+				log.Printf("copied %s rows=%d (%d/%d)", table.FQTN(), rowsCopied, n, len(tables))
 			}
 		})
 	}
 
 dispatch:
-	for _, table := range c.tables {
+	for _, table := range tables {
 		select {
 		case <-ctx.Done():
 			break dispatch
@@ -289,35 +358,53 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("source conn %s: %w", table.FQTN(), err)
 	}
-	defer closeAndLog(sourceConn, "source connection")
+	defer func() {
+		if sourceConn != nil {
+			closeAndLog(sourceConn, "source connection")
+		}
+	}()
 
 	targetConn, err := c.targetDB.Conn(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("target conn %s: %w", table.FQTN(), err)
 	}
-	defer closeAndLog(targetConn, "target connection")
+	defer func() {
+		if targetConn != nil {
+			closeAndLog(targetConn, "target connection")
+		}
+	}()
 
 	query := selectTableCopySQL(table)
 	rows, err := sourceConn.QueryContext(ctx, query)
 	if err != nil {
 		return 0, fmt.Errorf("query %s: %w", table.FQTN(), err)
 	}
-	defer closeAndLog(rows, "source rows")
+	defer func() {
+		if rows != nil {
+			closeAndLog(rows, "source rows")
+		}
+	}()
 
 	tx, err := targetConn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin target tx %s: %w", table.FQTN(), err)
 	}
 	defer func() {
-		_ = tx.Rollback()
+		if tx != nil {
+			_ = tx.Rollback()
+		}
 	}()
 
+	identityInsertOn := false
 	if table.HasIdentity {
 		if _, err := targetConn.ExecContext(ctx, fmt.Sprintf("SET IDENTITY_INSERT %s ON", table.FQTN())); err != nil {
 			return 0, fmt.Errorf("identity insert on %s: %w", table.FQTN(), err)
 		}
+		identityInsertOn = true
 		defer func() {
-			_, _ = targetConn.ExecContext(context.Background(), fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table.FQTN()))
+			if identityInsertOn && targetConn != nil {
+				_, _ = targetConn.ExecContext(context.Background(), fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table.FQTN()))
+			}
 		}()
 	}
 
@@ -334,7 +421,11 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 			return 0, fmt.Errorf("prepare insert %s: %w", table.FQTN(), err)
 		}
 	}
-	defer closeAndLog(stmt, "copy statement")
+	defer func() {
+		if stmt != nil {
+			closeAndLog(stmt, "copy statement")
+		}
+	}()
 
 	values := make([]any, len(table.CopyColumns))
 	scanDest := make([]any, len(table.CopyColumns))
@@ -367,7 +458,28 @@ func (c *copier) copySingleTable(ctx context.Context, table tableMeta) (int64, e
 		if _, err := stmt.ExecContext(ctx); err != nil {
 			enrichedErr := enrichBCPError(table, err)
 			log.Printf("BCP flush failed for %s, falling back to row-by-row inserts: %v", table.FQTN(), enrichedErr)
-			return c.fallbackCopyRowByRow(ctx, table, started)
+			closeAndLog(stmt, "failed bulk statement")
+			stmt = nil
+			if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+				log.Printf("rollback failed bulk transaction for %s: %v", table.FQTN(), rollbackErr)
+			}
+			tx = nil
+			if identityInsertOn {
+				if _, identityErr := targetConn.ExecContext(context.Background(), fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table.FQTN())); identityErr != nil {
+					log.Printf("disable identity insert after failed bulk copy for %s: %v", table.FQTN(), identityErr)
+				}
+				identityInsertOn = false
+			}
+			closeAndLog(targetConn, "failed bulk target connection")
+			targetConn = nil
+			closeAndLog(rows, "completed bulk source rows")
+			rows = nil
+			closeAndLog(sourceConn, "completed bulk source connection")
+			sourceConn = nil
+			fallbackTable := table
+			fallbackTable.BulkOK = false
+			fallbackTable.BulkReason = enrichedErr.Error()
+			return c.fallbackCopyRowByRow(ctx, fallbackTable, started)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -438,9 +550,7 @@ func (c *copier) fallbackCopyRowByRow(ctx context.Context, table tableMeta, star
 			}
 		}
 		if _, err := stmt.ExecContext(ctx, params...); err != nil {
-			for i, col := range table.CopyColumns {
-				log.Printf("fallback %s row %d col[%d] %s (%s) = %#v", table.FQTN(), rowsCopied+1, i, col.Name, col.SystemTypeName, truncateForLog(params[i]))
-			}
+			log.Printf("fallback insert failed for %s row=%d columns=%d", table.FQTN(), rowsCopied+1, len(table.CopyColumns))
 			return 0, fmt.Errorf("fallback insert row %d in %s: %w", rowsCopied+1, table.FQTN(), err)
 		}
 		rowsCopied++
@@ -456,28 +566,11 @@ func (c *copier) fallbackCopyRowByRow(ctx context.Context, table tableMeta, star
 	return rowsCopied, nil
 }
 
-func truncateForLog(v any) any {
-	if v == nil {
-		return nil
-	}
-	switch val := v.(type) {
-	case []byte:
-		if len(val) > 200 {
-			return fmt.Sprintf("%s...(%d bytes total)", string(val[:200]), len(val))
-		}
-		return string(val)
-	case string:
-		if len(val) > 200 {
-			return val[:200] + fmt.Sprintf("...(%d chars total)", len(val))
-		}
-		return val
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
 func (c *copier) createPostDataObjects(ctx context.Context) error {
 	for _, table := range c.tables {
+		if table.TargetPreexisting {
+			continue
+		}
 		if table.PrimaryKey != nil {
 			if _, err := c.targetDB.ExecContext(ctx, table.PrimaryKeySQL()); err != nil {
 				return fmt.Errorf("create primary key %s: %w", table.FQTN(), err)
@@ -566,46 +659,6 @@ WHERE s.name = @p1 AND t.name = @p2;`
 	return count > 0, nil
 }
 
-func (c *copier) createViews(ctx context.Context) error {
-	if len(c.views) == 0 {
-		return nil
-	}
-
-	ordered, err := topologicalSortViews(c.views)
-	if err != nil {
-		return fmt.Errorf("view dependency resolution: %w", err)
-	}
-
-	for _, v := range ordered {
-		sqlText := v.CreateViewSQL()
-		if c.cfg.Verbose {
-			log.Printf("creating view %s", v.FQTN())
-		}
-		if _, err := c.targetDB.ExecContext(ctx, sqlText); err != nil {
-			return fmt.Errorf("create view %s: %w", v.FQTN(), err)
-		}
-	}
-	return nil
-}
-
-func (c *copier) createProcedures(ctx context.Context) error {
-	ordered, err := topologicalSortProcedures(c.procedures)
-	if err != nil {
-		return fmt.Errorf("procedure dependency resolution: %w", err)
-	}
-
-	for _, procedure := range ordered {
-		sqlText := procedure.CreateProcedureSQL()
-		if c.cfg.Verbose {
-			log.Printf("creating procedure %s", procedure.FQTN())
-		}
-		if _, err := c.targetDB.ExecContext(ctx, sqlText); err != nil {
-			return fmt.Errorf("create procedure %s: %w", procedure.FQTN(), err)
-		}
-	}
-	return nil
-}
-
 func (c *copier) createTriggers(ctx context.Context) error {
 	ordered, err := topologicalSortTriggers(c.triggers)
 	if err != nil {
@@ -630,171 +683,6 @@ func (c *copier) createTriggers(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (c *copier) createFunctions(ctx context.Context) error {
-	if len(c.functions) == 0 {
-		return nil
-	}
-
-	ordered, err := topologicalSortFunctions(c.functions)
-	if err != nil {
-		return fmt.Errorf("function dependency resolution: %w", err)
-	}
-
-	for _, function := range ordered {
-		sqlText := function.CreateFunctionSQL()
-		if c.cfg.Verbose {
-			log.Printf("creating function %s", function.FQTN())
-		}
-		if _, err := c.targetDB.ExecContext(ctx, sqlText); err != nil {
-			return fmt.Errorf("create function %s: %w", function.FQTN(), err)
-		}
-	}
-	return nil
-}
-
-func (c *copier) createSynonyms(ctx context.Context) error {
-	for _, synonym := range c.synonyms {
-		sqlText := synonym.CreateSynonymSQL()
-		if c.cfg.Verbose {
-			log.Printf("creating synonym %s", synonym.FQTN())
-		}
-		if _, err := c.targetDB.ExecContext(ctx, sqlText); err != nil {
-			return fmt.Errorf("create synonym %s: %w", synonym.FQTN(), err)
-		}
-	}
-	return nil
-}
-
-// topologicalSortViews returns views in dependency order using Kahn's algorithm.
-func topologicalSortViews(views []viewMeta) ([]viewMeta, error) {
-	fqtnToIdx := make(map[string]int, len(views))
-	for i, v := range views {
-		fqtnToIdx[strings.ToLower(v.FQTN())] = i
-	}
-
-	inDegree := make([]int, len(views))
-	adj := make([][]int, len(views))
-	for i, v := range views {
-		for _, dep := range v.DependsOn {
-			if j, ok := fqtnToIdx[dep]; ok {
-				adj[j] = append(adj[j], i)
-				inDegree[i]++
-			}
-		}
-	}
-
-	var queue []int
-	for i, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, i)
-		}
-	}
-
-	var sorted []viewMeta
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		sorted = append(sorted, views[cur])
-		for _, next := range adj[cur] {
-			inDegree[next]--
-			if inDegree[next] == 0 {
-				queue = append(queue, next)
-			}
-		}
-	}
-
-	if len(sorted) != len(views) {
-		return nil, fmt.Errorf("circular dependency detected among views")
-	}
-	return sorted, nil
-}
-
-func topologicalSortFunctions(functions []functionMeta) ([]functionMeta, error) {
-	fqtnToIdx := make(map[string]int, len(functions))
-	for i, fn := range functions {
-		fqtnToIdx[strings.ToLower(fn.FQTN())] = i
-	}
-
-	inDegree := make([]int, len(functions))
-	adj := make([][]int, len(functions))
-	for i, fn := range functions {
-		for _, dep := range fn.DependsOn {
-			if j, ok := fqtnToIdx[dep]; ok {
-				adj[j] = append(adj[j], i)
-				inDegree[i]++
-			}
-		}
-	}
-
-	var queue []int
-	for i, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, i)
-		}
-	}
-
-	var sorted []functionMeta
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		sorted = append(sorted, functions[cur])
-		for _, next := range adj[cur] {
-			inDegree[next]--
-			if inDegree[next] == 0 {
-				queue = append(queue, next)
-			}
-		}
-	}
-
-	if len(sorted) != len(functions) {
-		return nil, fmt.Errorf("circular dependency detected among functions")
-	}
-	return sorted, nil
-}
-
-func topologicalSortProcedures(procedures []procedureMeta) ([]procedureMeta, error) {
-	fqtnToIdx := make(map[string]int, len(procedures))
-	for i, procedure := range procedures {
-		fqtnToIdx[strings.ToLower(procedure.FQTN())] = i
-	}
-
-	inDegree := make([]int, len(procedures))
-	adj := make([][]int, len(procedures))
-	for i, procedure := range procedures {
-		for _, dep := range procedure.DependsOn {
-			if j, ok := fqtnToIdx[dep]; ok {
-				adj[j] = append(adj[j], i)
-				inDegree[i]++
-			}
-		}
-	}
-
-	var queue []int
-	for i, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, i)
-		}
-	}
-
-	var sorted []procedureMeta
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		sorted = append(sorted, procedures[cur])
-		for _, next := range adj[cur] {
-			inDegree[next]--
-			if inDegree[next] == 0 {
-				queue = append(queue, next)
-			}
-		}
-	}
-
-	if len(sorted) != len(procedures) {
-		return nil, fmt.Errorf("circular dependency detected among procedures")
-	}
-	return sorted, nil
 }
 
 func topologicalSortTriggers(triggers []triggerMeta) ([]triggerMeta, error) {

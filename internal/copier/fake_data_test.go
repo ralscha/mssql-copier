@@ -170,7 +170,7 @@ func TestReplaceValueFallsBackToOriginalNormalization(t *testing.T) {
 	}
 }
 
-func TestReplaceValueTruncatesLongNvarchar(t *testing.T) {
+func TestReplaceValueDoesNotSilentlyTruncateSourceNvarchar(t *testing.T) {
 	c := &copier{}
 	table := tableMeta{Schema: "event", Name: "Event"}
 	col := columnMeta{Name: "lokalitaet_kanton", SystemTypeName: "nvarchar", MaxLength: 8}
@@ -182,9 +182,8 @@ func TestReplaceValueTruncatesLongNvarchar(t *testing.T) {
 	if !ok {
 		t.Fatalf("replaceValue() = %T %#v, want string", got, got)
 	}
-	// nvarchar(8 bytes) = 4 characters max
-	if s != "Nort" {
-		t.Fatalf("replaceValue() = %q, want %q", s, "Nort")
+	if s != "North Carolina" {
+		t.Fatalf("replaceValue() = %q, want original source value", s)
 	}
 }
 
@@ -201,7 +200,7 @@ func TestReplaceValueDoesNotTruncateFittingNvarchar(t *testing.T) {
 	}
 }
 
-func TestReplaceValueTruncatesLongVarchar(t *testing.T) {
+func TestReplaceValueDoesNotSilentlyTruncateSourceVarchar(t *testing.T) {
 	c := &copier{}
 	table := tableMeta{Schema: "dbo", Name: "T"}
 	col := columnMeta{Name: "code", SystemTypeName: "varchar", MaxLength: 5}
@@ -209,8 +208,8 @@ func TestReplaceValueTruncatesLongVarchar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replaceValue() unexpected error: %v", err)
 	}
-	if got != "abcde" {
-		t.Fatalf("replaceValue() = %q, want %q", got, "abcde")
+	if got != "abcdefghij" {
+		t.Fatalf("replaceValue() = %q, want original source value", got)
 	}
 }
 
@@ -227,7 +226,7 @@ func TestReplaceValueDoesNotTruncateMaxNvarchar(t *testing.T) {
 	}
 }
 
-func TestReplaceValueTruncatesLongBytes(t *testing.T) {
+func TestReplaceValueDoesNotSilentlyTruncateSourceBytes(t *testing.T) {
 	c := &copier{}
 	table := tableMeta{Schema: "dbo", Name: "T"}
 	col := columnMeta{Name: "data", SystemTypeName: "varbinary", MaxLength: 4}
@@ -239,7 +238,41 @@ func TestReplaceValueTruncatesLongBytes(t *testing.T) {
 	if !ok {
 		t.Fatalf("replaceValue() = %T %#v, want []byte", got, got)
 	}
-	if len(b) != 4 || b[0] != 1 || b[3] != 4 {
-		t.Fatalf("replaceValue() = %v, want [1 2 3 4]", b)
+	if len(b) != 6 || b[0] != 1 || b[5] != 6 {
+		t.Fatalf("replaceValue() = %v, want original source bytes", b)
+	}
+}
+
+func TestTruncateGeneratedNvarcharUsesUTF16Units(t *testing.T) {
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "display_name", SystemTypeName: "nvarchar", MaxLength: 6}
+
+	if got := truncateToColumnLength("A😀BC", col, table); got != "A😀" {
+		t.Fatalf("truncateToColumnLength() = %q, want %q", got, "A😀")
+	}
+	if got := truncateToColumnLength("éé", col, table); got != "éé" {
+		t.Fatalf("truncateToColumnLength() corrupted fitting Unicode value: %q", got)
+	}
+}
+
+func TestTruncateGeneratedVarcharKeepsValidUTF8(t *testing.T) {
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "code", SystemTypeName: "varchar", MaxLength: 3}
+
+	got, ok := truncateToColumnLength("éé", col, table).(string)
+	if !ok {
+		t.Fatal("truncateToColumnLength() did not return a string")
+	}
+	if got != "é" {
+		t.Fatalf("truncateToColumnLength() = %q, want a valid rune boundary", got)
+	}
+}
+
+func TestTruncateGeneratedLegacyTextDoesNotUseMetadataPointerLength(t *testing.T) {
+	table := tableMeta{Schema: "dbo", Name: "T"}
+	col := columnMeta{Name: "notes", SystemTypeName: "ntext", MaxLength: 16}
+	value := "This legacy text value is longer than eight characters"
+	if got := truncateToColumnLength(value, col, table); got != value {
+		t.Fatalf("truncateToColumnLength() = %q, want unchanged legacy text", got)
 	}
 }

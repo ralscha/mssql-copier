@@ -56,7 +56,9 @@ Preview which objects would be copied without touching a target. In the TUI, swi
 
 ### DDL export
 
-Write a source-only DDL baseline file for the selected schema objects. In the TUI, switch to `ddl` mode and fill in the DDL export path. The generated file is ordered SQL with per-object changeset comments. This mode exports DDL only; it does not export table data.
+Write a source-only Flyway SQL Server baseline migration for the selected schema objects. In the TUI, switch to `ddl` mode and fill in the DDL export path. The generated file is ordered T-SQL with `GO` batch delimiters, so programmable objects such as views, functions, procedures, and triggers are accepted by Flyway's SQL Server parser. This mode exports DDL only; it does not export table data.
+
+Use a Flyway baseline or versioned migration filename such as `B001__initial_schema.sql` or `V001__initial_schema.sql`. The copier leaves the exact filename and version under your control.
 
 The generated file contains ordered SQL statements for schemas, types, sequences, tables, constraints, indexes, views, functions, synonyms, procedures, and triggers. Because this is an initial baseline export, `drop-existing` is not supported with this mode and is hidden in the TUI.
 
@@ -81,6 +83,8 @@ In the TUI, the report path is shown only in `copy` mode. Because the report is 
 Filters are applied by schema name and object name across copied tables and other discovered objects.
 
 When a filtered copy excludes a referenced parent table and that table is not already present on the target, foreign key recreation for the copied child table is skipped.
+
+Schema dependencies needed by selected objects are included automatically even when they fall outside an include filter. For example, selecting `sales.orders` also selects an alias type in `types` or a sequence in `sequences` when the table definition references it. A table pulled in only because a view or function references it is included in DDL but its data is not copied or exported. During a direct copy, an existing dependency-only target table is preserved. An explicit exclude filter still wins; the copier stops with a dependency error instead of producing an incomplete schema.
 
 Configure these in the TUI or YAML:
 
@@ -131,6 +135,8 @@ The TUI currently writes exact per-column selectors only: `schema.table.column`.
 
 The TUI can also export its current state to a YAML file path you choose on the form screen. This is useful for saving source/target settings, filters, run mode outputs such as report and export paths, and optional LLM settings before running. Fake-data mappings chosen in the TUI are stored in `.mssql-copier/fake-data-mapping.yml` under the current source DSN instead of being written into the exported YAML file.
 
+Exported YAML never includes DSN passwords, literal LLM API keys, or Docker SA passwords. Use `llm.api-key-env` for LLM credentials. Docker passwords are generated when needed or recovered from the protected compose file for an existing persistent target.
+
 Optional TUI LLM auto-selection is configured in YAML:
 
 ```yaml
@@ -179,7 +185,7 @@ For a non-interactive `ddl+data` export, set both output paths:
 
 ```yaml
 source: sqlserver://user:pass@source-host:1433?database=SourceDB
-export-ddl: ./export/schema.sql
+export-ddl: ./flyway/sql/B001__initial_schema.sql
 export-data: ./export/data.sql
 export-data-rows: 25
 ```

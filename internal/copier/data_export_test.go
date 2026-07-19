@@ -3,11 +3,65 @@ package copier
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestWriteFileAtomicallyPreservesExistingFileOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sql")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+
+	wantErr := errors.New("generation failed")
+	err := writeFileAtomically(path, func(writer io.Writer) error {
+		_, _ = io.WriteString(writer, "partial")
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("writeFileAtomically() error = %v, want %v", err, wantErr)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read preserved destination: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("destination = %q, want original content", got)
+	}
+	temporary, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".data.sql.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temporary files: %v", err)
+	}
+	if len(temporary) != 0 {
+		t.Fatalf("temporary files were not cleaned up: %v", temporary)
+	}
+}
+
+func TestWriteFileAtomicallyReplacesDestinationOnSuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sql")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	if err := writeFileAtomically(path, func(writer io.Writer) error {
+		_, err := io.WriteString(writer, "replacement")
+		return err
+	}); err != nil {
+		t.Fatalf("writeFileAtomically() unexpected error: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read destination: %v", err)
+	}
+	if string(got) != "replacement" {
+		t.Fatalf("destination = %q, want replacement", got)
+	}
+}
 
 func TestSelectTableExportSQLOrdersByPrimaryKey(t *testing.T) {
 	table := tableMeta{
@@ -59,6 +113,21 @@ func TestSelectTableExportSQLAppliesRowLimit(t *testing.T) {
 	want := "SELECT TOP (25) [id], [created_at] FROM [sales].[orders] ORDER BY [id] ASC"
 	if got != want {
 		t.Fatalf("selectTableExportSQL() = %q, want %q", got, want)
+	}
+}
+
+func TestExportParentBatchSizeStaysWithinSQLServerParameterBudget(t *testing.T) {
+	for _, width := range []int{1, 2, 3, 100, 1024} {
+		batchSize := exportParentBatchSize(width)
+		if batchSize < 1 {
+			t.Fatalf("exportParentBatchSize(%d) = %d, want at least one tuple", width, batchSize)
+		}
+		if batchSize*width > maxExportQueryParameters {
+			t.Fatalf("exportParentBatchSize(%d) uses %d parameters, budget is %d", width, batchSize*width, maxExportQueryParameters)
+		}
+	}
+	if got := exportParentBatchSize(0); got != 0 {
+		t.Fatalf("exportParentBatchSize(0) = %d, want 0", got)
 	}
 }
 

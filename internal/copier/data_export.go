@@ -1,10 +1,13 @@
 package copier
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,12 +21,9 @@ type exportRow struct {
 	values []any
 }
 
-func (c *copier) writeDataExportFile(ctx context.Context) error {
-	script, err := c.buildDataExportSQL(ctx)
-	if err != nil {
-		return err
-	}
+const maxExportQueryParameters = 2000
 
+func (c *copier) writeDataExportFile(ctx context.Context) error {
 	dir := filepath.Dir(c.cfg.ExportDataFile)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -31,52 +31,114 @@ func (c *copier) writeDataExportFile(ctx context.Context) error {
 		}
 	}
 
-	if err := os.WriteFile(c.cfg.ExportDataFile, []byte(script), 0o600); err != nil {
-		return fmt.Errorf("write data export file: %w", err)
+	return writeFileAtomically(c.cfg.ExportDataFile, func(writer io.Writer) error {
+		return c.writeDataExportSQL(ctx, writer)
+	})
+}
+
+func writeFileAtomically(path string, write func(io.Writer) error) error {
+	tempDir := filepath.Dir(path)
+	if tempDir == "" {
+		tempDir = "."
 	}
+	file, err := os.CreateTemp(tempDir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary data export file: %w", err)
+	}
+	tempPath := file.Name()
+	closed := false
+	committed := false
+	defer func() {
+		if !closed {
+			closeAndLog(file, "temporary data export file")
+		}
+		if !committed {
+			if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("remove temporary data export file %s: %v", tempPath, err)
+			}
+		}
+	}()
+
+	writer := bufio.NewWriterSize(file, 256*1024)
+	if err := write(writer); err != nil {
+		return err
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("flush data export file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync data export file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("close data export file: %w", err)
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace data export file: %w", err)
+	}
+	committed = true
 	return nil
 }
 
 func (c *copier) buildDataExportSQL(ctx context.Context) (string, error) {
-	if len(c.tables) == 0 {
-		return "-- mssql-copier data export\n", nil
-	}
-
-	tables := sortedTablesForDataExport(c.tables)
-	exportRowsByTable, err := c.buildExportRowsByTable(ctx, tables)
-	if err != nil {
+	var builder strings.Builder
+	if err := c.writeDataExportSQL(ctx, &builder); err != nil {
 		return "", err
 	}
-
-	var builder strings.Builder
-	builder.WriteString("-- mssql-copier data export\n")
-	builder.WriteString("\n")
-	for _, table := range tables {
-		builder.WriteString("ALTER TABLE ")
-		builder.WriteString(table.FQTN())
-		builder.WriteString(" NOCHECK CONSTRAINT ALL;\n")
-	}
-
-	for _, table := range tables {
-		section, err := c.buildTableDataSection(table, exportRowsByTable[normalizedTableKey(table)])
-		if err != nil {
-			return "", err
-		}
-		if section == "" {
-			continue
-		}
-		builder.WriteString("\n")
-		builder.WriteString(section)
-	}
-
-	builder.WriteString("\n")
-	for _, table := range tables {
-		builder.WriteString("ALTER TABLE ")
-		builder.WriteString(table.FQTN())
-		builder.WriteString(" WITH CHECK CHECK CONSTRAINT ALL;\n")
-	}
-
 	return builder.String(), nil
+}
+
+func (c *copier) writeDataExportSQL(ctx context.Context, writer io.Writer) error {
+	if _, err := io.WriteString(writer, "-- mssql-copier data export\n"); err != nil {
+		return fmt.Errorf("write data export header: %w", err)
+	}
+	dataTables := c.dataTables()
+	if len(dataTables) == 0 {
+		return nil
+	}
+
+	tables := sortedTablesForDataExport(dataTables)
+	var exportRowsByTable map[string][]exportRow
+	if c.cfg.ExportDataRows > 0 {
+		var err error
+		exportRowsByTable, err = c.buildExportRowsByTable(ctx, tables)
+		if err != nil {
+			return err
+		}
+	}
+
+	if _, err := io.WriteString(writer, "\n"); err != nil {
+		return fmt.Errorf("write data export separator: %w", err)
+	}
+	for _, table := range tables {
+		if _, err := fmt.Fprintf(writer, "ALTER TABLE %s NOCHECK CONSTRAINT ALL;\n", table.FQTN()); err != nil {
+			return fmt.Errorf("write data export constraint preamble: %w", err)
+		}
+	}
+
+	for _, table := range tables {
+		if _, err := io.WriteString(writer, "\n"); err != nil {
+			return fmt.Errorf("write data export separator: %w", err)
+		}
+		if c.cfg.ExportDataRows > 0 {
+			if err := c.writeTableDataSection(writer, table, exportRowsByTable[normalizedTableKey(table)]); err != nil {
+				return err
+			}
+		} else if err := c.streamTableDataSection(ctx, writer, table); err != nil {
+			return err
+		}
+	}
+
+	if _, err := io.WriteString(writer, "\n"); err != nil {
+		return fmt.Errorf("write data export separator: %w", err)
+	}
+	for _, table := range tables {
+		if _, err := fmt.Fprintf(writer, "ALTER TABLE %s WITH CHECK CHECK CONSTRAINT ALL;\n", table.FQTN()); err != nil {
+			return fmt.Errorf("write data export constraint epilogue: %w", err)
+		}
+	}
+	return nil
 }
 
 func sortedTablesForDataExport(tables []tableMeta) []tableMeta {
@@ -142,7 +204,31 @@ func (c *copier) fetchParentRowsForExport(ctx context.Context, table tableMeta, 
 	if len(table.CopyColumns) == 0 || len(refColumns) == 0 || len(tuples) == 0 {
 		return nil, nil
 	}
+	batchSize := exportParentBatchSize(len(refColumns))
+	if batchSize < 1 {
+		return nil, fmt.Errorf("query parent rows %s: foreign key width %d exceeds the export query parameter budget", table.FQTN(), len(refColumns))
+	}
 
+	result := make([]exportRow, 0)
+	for start := 0; start < len(tuples); start += batchSize {
+		end := min(start+batchSize, len(tuples))
+		rows, err := c.fetchParentRowBatch(ctx, table, refColumns, tuples[start:end])
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, rows...)
+	}
+	return result, nil
+}
+
+func exportParentBatchSize(columnCount int) int {
+	if columnCount <= 0 {
+		return 0
+	}
+	return maxExportQueryParameters / columnCount
+}
+
+func (c *copier) fetchParentRowBatch(ctx context.Context, table tableMeta, refColumns []string, tuples [][]any) ([]exportRow, error) {
 	whereParts := make([]string, 0, len(tuples))
 	args := make([]any, 0, len(refColumns)*len(tuples))
 	paramOrdinal := 1
@@ -176,7 +262,7 @@ func (c *copier) fetchParentRowsForExport(ctx context.Context, table tableMeta, 
 		scanDest[i] = &values[i]
 	}
 
-	var result []exportRow
+	result := make([]exportRow, 0)
 	for rows.Next() {
 		if err := rows.Scan(scanDest...); err != nil {
 			return nil, fmt.Errorf("scan referenced parent row %s: %w", table.FQTN(), err)
@@ -193,56 +279,109 @@ func (c *copier) fetchParentRowsForExport(ctx context.Context, table tableMeta, 
 	return result, nil
 }
 
-func (c *copier) buildTableDataSection(table tableMeta, rowsData []exportRow) (string, error) {
+func (c *copier) writeTableDataSection(writer io.Writer, table tableMeta, rowsData []exportRow) error {
+	if err := writeTableDataHeader(writer, table); err != nil {
+		return err
+	}
 	if len(table.CopyColumns) == 0 {
-		return fmt.Sprintf("-- table %s\n-- skipped: no copyable columns\n", table.FQTN()), nil
+		return nil
+	}
+	for _, row := range rowsData {
+		if err := c.writeTableDataRow(writer, table, row); err != nil {
+			return err
+		}
+	}
+	return writeTableDataFooter(writer, table, len(rowsData))
+}
+
+func (c *copier) streamTableDataSection(ctx context.Context, writer io.Writer, table tableMeta) error {
+	if err := writeTableDataHeader(writer, table); err != nil {
+		return err
+	}
+	if len(table.CopyColumns) == 0 {
+		return nil
 	}
 
-	var builder strings.Builder
-	builder.WriteString("-- table ")
-	builder.WriteString(table.FQTN())
-	builder.WriteString("\n")
+	rows, err := c.sourceDB.QueryContext(ctx, selectTableExportSQL(table, 0))
+	if err != nil {
+		return fmt.Errorf("query data export %s: %w", table.FQTN(), err)
+	}
+	defer closeAndLog(rows, "streaming data export rows")
+
+	values := make([]any, len(table.CopyColumns))
+	scanDest := make([]any, len(table.CopyColumns))
+	for i := range values {
+		scanDest[i] = &values[i]
+	}
 
 	rowCount := 0
-	if table.HasIdentity {
-		builder.WriteString("SET IDENTITY_INSERT ")
-		builder.WriteString(table.FQTN())
-		builder.WriteString(" ON;\n")
-	}
-
-	for _, row := range rowsData {
-		literals := make([]string, len(table.CopyColumns))
-		for i, col := range table.CopyColumns {
-			replaced, err := c.replaceValue(table, col, row.values[i])
-			if err != nil {
-				return "", err
-			}
-			literal, err := sqlLiteral(replaced, col, nil)
-			if err != nil {
-				return "", fmt.Errorf("format data export value %s.%s: %w", table.FQTN(), col.Name, err)
-			}
-			literals[i] = literal
+	for rows.Next() {
+		if err := rows.Scan(scanDest...); err != nil {
+			return fmt.Errorf("scan data export row %s: %w", table.FQTN(), err)
 		}
-
-		builder.WriteString("INSERT INTO ")
-		builder.WriteString(table.FQTN())
-		builder.WriteString(" (")
-		builder.WriteString(joinQuotedColumns(table.CopyColumns))
-		builder.WriteString(") VALUES (")
-		builder.WriteString(strings.Join(literals, ", "))
-		builder.WriteString(");\n")
+		if err := c.writeTableDataRow(writer, table, exportRow{values: values}); err != nil {
+			return err
+		}
 		rowCount++
 	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate data export rows %s: %w", table.FQTN(), err)
+	}
+	return writeTableDataFooter(writer, table, rowCount)
+}
 
+func writeTableDataHeader(writer io.Writer, table tableMeta) error {
+	if _, err := fmt.Fprintf(writer, "-- table %s\n", table.FQTN()); err != nil {
+		return fmt.Errorf("write data export table header: %w", err)
+	}
+	if len(table.CopyColumns) == 0 {
+		if _, err := io.WriteString(writer, "-- skipped: no copyable columns\n"); err != nil {
+			return fmt.Errorf("write data export skipped table: %w", err)
+		}
+		return nil
+	}
 	if table.HasIdentity {
-		builder.WriteString("SET IDENTITY_INSERT ")
-		builder.WriteString(table.FQTN())
-		builder.WriteString(" OFF;\n")
+		if _, err := fmt.Fprintf(writer, "SET IDENTITY_INSERT %s ON;\n", table.FQTN()); err != nil {
+			return fmt.Errorf("write data export identity preamble: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *copier) writeTableDataRow(writer io.Writer, table tableMeta, row exportRow) error {
+	if len(row.values) != len(table.CopyColumns) {
+		return fmt.Errorf("format data export row %s: got %d values for %d columns", table.FQTN(), len(row.values), len(table.CopyColumns))
+	}
+	literals := make([]string, len(table.CopyColumns))
+	for i, col := range table.CopyColumns {
+		replaced, err := c.replaceValue(table, col, row.values[i])
+		if err != nil {
+			return err
+		}
+		literal, err := sqlLiteral(replaced, col, nil)
+		if err != nil {
+			return fmt.Errorf("format data export value %s.%s: %w", table.FQTN(), col.Name, err)
+		}
+		literals[i] = literal
+	}
+	if _, err := fmt.Fprintf(writer, "INSERT INTO %s (%s) VALUES (%s);\n", table.FQTN(), joinQuotedColumns(table.CopyColumns), strings.Join(literals, ", ")); err != nil {
+		return fmt.Errorf("write data export row %s: %w", table.FQTN(), err)
+	}
+	return nil
+}
+
+func writeTableDataFooter(writer io.Writer, table tableMeta, rowCount int) error {
+	if table.HasIdentity {
+		if _, err := fmt.Fprintf(writer, "SET IDENTITY_INSERT %s OFF;\n", table.FQTN()); err != nil {
+			return fmt.Errorf("write data export identity epilogue: %w", err)
+		}
 	}
 	if rowCount == 0 {
-		builder.WriteString("-- no rows\n")
+		if _, err := io.WriteString(writer, "-- no rows\n"); err != nil {
+			return fmt.Errorf("write empty data export table: %w", err)
+		}
 	}
-	return builder.String(), nil
+	return nil
 }
 
 func sqlLiteral(value any, col columnMeta, columnType *sql.ColumnType) (string, error) {

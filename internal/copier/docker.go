@@ -212,7 +212,7 @@ func setupDockerTarget(cfg dockerTargetConfig) (string, error) {
 	if err := waitForSQLServer(dsn, 90*time.Second); err != nil {
 		return "", err
 	}
-	log.Printf("docker: SQL Server is ready (SA password: %s)", resolvedCfg.SAPassword)
+	log.Printf("docker: SQL Server is ready")
 	return dsn, nil
 }
 

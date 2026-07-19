@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/brianvoe/gofakeit/v7"
 )
@@ -311,14 +313,14 @@ func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bo
 
 func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, error) {
 	if c.dataFaker == nil {
-		return normalizeValue(truncateToColumnLength(value, col, table), col), nil
+		return normalizeValue(value, col), nil
 	}
 	replacement, ok, err := c.dataFaker.fakeValue(c.faker, table, col)
 	if err != nil {
 		return nil, fmt.Errorf("generate fake value for %s.%s: %w", table.FQTN(), col.Name, err)
 	}
 	if !ok {
-		return normalizeValue(truncateToColumnLength(value, col, table), col), nil
+		return normalizeValue(value, col), nil
 	}
 	return normalizeValue(truncateToColumnLength(replacement, col, table), col), nil
 }
@@ -330,9 +332,18 @@ func truncateToColumnLength(value any, col columnMeta, table tableMeta) any {
 	switch v := value.(type) {
 	case string:
 		limit := charLimit(col)
-		if limit > 0 && len(v) > limit {
-			log.Printf("truncating %s.%s from %d to %d characters to fit %s", table.FQTN(), col.Name, len(v), limit, col.SystemTypeName)
-			return v[:limit]
+		if limit <= 0 {
+			return value
+		}
+		var truncated string
+		if col.SystemTypeName == "nvarchar" || col.SystemTypeName == "nchar" {
+			truncated = truncateUTF16Units(v, limit)
+		} else {
+			truncated = truncateUTF8Bytes(v, limit)
+		}
+		if truncated != v {
+			log.Printf("truncating generated value for %s.%s to fit %s", table.FQTN(), col.Name, col.SystemTypeName)
+			return truncated
 		}
 	case []byte:
 		if len(v) > col.MaxLength {
@@ -347,13 +358,45 @@ func truncateToColumnLength(value any, col columnMeta, table tableMeta) any {
 
 func charLimit(col columnMeta) int {
 	switch col.SystemTypeName {
-	case "nvarchar", "nchar", "ntext":
+	case "nvarchar", "nchar":
 		return col.MaxLength / 2
-	case "varchar", "char", "text":
+	case "varchar", "char":
 		return col.MaxLength
 	default:
 		return 0
 	}
+}
+
+func truncateUTF16Units(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	units := 0
+	for index, r := range value {
+		runeUnits := utf16.RuneLen(r)
+		if runeUnits < 0 {
+			runeUnits = 1
+		}
+		if units+runeUnits > limit {
+			return value[:index]
+		}
+		units += runeUnits
+	}
+	return value
+}
+
+func truncateUTF8Bytes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	end := limit
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end]
 }
 
 // matchingOutputTypes returns gofakeit output types compatible with the given

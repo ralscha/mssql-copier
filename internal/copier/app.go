@@ -602,7 +602,7 @@ func ensureTargetDatabase(targetDSN string, maxConns int) error {
 func (c *copier) run(ctx context.Context) error {
 	start := time.Now()
 	log.Printf("discovering source metadata")
-	tables, err := c.loadMetadata(ctx)
+	tables, err := c.loadTableCatalog(ctx)
 	if err != nil {
 		return err
 	}
@@ -663,15 +663,17 @@ func (c *copier) run(ctx context.Context) error {
 	c.synonyms = synonyms
 	log.Printf("discovered %d synonyms", len(c.synonyms))
 
-	if err := c.resolveProcedureDependencies(ctx); err != nil {
-		return err
-	}
 	log.Printf("discovered %d procedures", len(c.procedures))
 
-	if err := c.resolveTriggerDependencies(ctx); err != nil {
-		return err
-	}
 	log.Printf("discovered %d triggers", len(c.triggers))
+
+	if err := c.selectDependencyClosure(ctx); err != nil {
+		return fmt.Errorf("select dependency closure: %w", err)
+	}
+	log.Printf(
+		"selected objects: tables=%d data-tables=%d alias-types=%d table-types=%d sequences=%d views=%d functions=%d procedures=%d triggers=%d synonyms=%d",
+		len(c.tables), len(c.dataTables()), len(c.aliasTypes), len(c.tableTypes), len(c.sequences), len(c.views), len(c.functions), len(c.procedures), len(c.triggers), len(c.synonyms),
+	)
 
 	if c.cfg.Plan {
 		c.printPlan()
@@ -709,25 +711,13 @@ func (c *copier) run(ctx context.Context) error {
 	if err := c.createSequences(ctx); err != nil {
 		return err
 	}
-	if err := c.createTables(ctx); err != nil {
+	if err := c.createSchemaObjects(ctx); err != nil {
 		return err
 	}
 	if err := c.copyTableData(ctx); err != nil {
 		return err
 	}
 	if err := c.createPostDataObjects(ctx); err != nil {
-		return err
-	}
-	if err := c.createViews(ctx); err != nil {
-		return err
-	}
-	if err := c.createFunctions(ctx); err != nil {
-		return err
-	}
-	if err := c.createSynonyms(ctx); err != nil {
-		return err
-	}
-	if err := c.createProcedures(ctx); err != nil {
 		return err
 	}
 	if err := c.createTriggers(ctx); err != nil {

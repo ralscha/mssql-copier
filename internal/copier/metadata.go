@@ -7,6 +7,25 @@ import (
 )
 
 func (c *copier) loadMetadata(ctx context.Context) ([]tableMeta, error) {
+	tables, err := c.loadTableCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	selected := tables[:0]
+	for i := range tables {
+		if !c.shouldCopyTable(tables[i].Schema, tables[i].Name) {
+			continue
+		}
+		if err := c.loadTableDetails(ctx, &tables[i]); err != nil {
+			return nil, fmt.Errorf("load %s metadata: %w", tables[i].FQTN(), err)
+		}
+		selected = append(selected, tables[i])
+	}
+	return selected, nil
+}
+
+func (c *copier) loadTableCatalog(ctx context.Context) ([]tableMeta, error) {
 	const tablesSQL = `
 SELECT
 	s.name,
@@ -31,12 +50,6 @@ ORDER BY approx_rows DESC, s.name, t.name;`
 		var table tableMeta
 		if err := rows.Scan(&table.Schema, &table.Name, &table.ObjectID, &table.ApproxRows); err != nil {
 			return nil, err
-		}
-		if !c.shouldCopyTable(table.Schema, table.Name) {
-			continue
-		}
-		if err := c.loadTableDetails(ctx, &table); err != nil {
-			return nil, fmt.Errorf("load %s metadata: %w", table.FQTN(), err)
 		}
 		tables = append(tables, table)
 	}
@@ -408,26 +421,10 @@ ORDER BY s.name, v.name;`
 			continue
 		}
 		v.Definition = *def
-		if !c.shouldCopyTable(v.Schema, v.Name) {
-			continue
-		}
 		views = append(views, v)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	// Resolve inter-view dependencies within the copied set.
-	viewFQTNs := make(map[string]int, len(views))
-	for i, v := range views {
-		viewFQTNs[strings.ToLower(v.FQTN())] = i
-	}
-	for i := range views {
-		deps, err := c.resolveViewDependencies(ctx, views[i], viewFQTNs)
-		if err != nil {
-			return nil, fmt.Errorf("resolve dependencies for %s: %w", views[i].FQTN(), err)
-		}
-		views[i].DependsOn = deps
 	}
 
 	return views, nil
@@ -472,9 +469,6 @@ ORDER BY s.name, t.name;`
 			return nil, err
 		}
 		aliasType.SystemTypeName = strings.ToLower(aliasType.SystemTypeName)
-		if !c.shouldCopyTable(aliasType.Schema, aliasType.Name) {
-			continue
-		}
 		aliasTypes = append(aliasTypes, aliasType)
 	}
 	if err := rows.Err(); err != nil {
@@ -504,9 +498,6 @@ ORDER BY s.name, tt.name;`
 		var tableType tableTypeMeta
 		if err := rows.Scan(&tableType.Schema, &tableType.Name, &tableType.ObjectID); err != nil {
 			return nil, err
-		}
-		if !c.shouldCopyTable(tableType.Schema, tableType.Name) {
-			continue
 		}
 		if err := c.loadTableTypeDetails(ctx, &tableType); err != nil {
 			return nil, fmt.Errorf("load %s metadata: %w", tableType.FQTN(), err)
@@ -588,9 +579,6 @@ ORDER BY s.name, seq.name;`
 			return nil, err
 		}
 		seq.TypeName = strings.ToLower(seq.TypeName)
-		if !c.shouldCopyTable(seq.Schema, seq.Name) {
-			continue
-		}
 		sequences = append(sequences, seq)
 	}
 	if err := rows.Err(); err != nil {
@@ -627,44 +615,12 @@ ORDER BY s.name, p.name;`
 			continue
 		}
 		proc.Definition = *def
-		if !c.shouldCopyTable(proc.Schema, proc.Name) {
-			continue
-		}
 		procedures = append(procedures, proc)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return procedures, nil
-}
-
-func (c *copier) resolveProcedureDependencies(ctx context.Context) error {
-	if len(c.procedures) == 0 {
-		return nil
-	}
-
-	copiedObjects := make(map[string]struct{}, len(c.views)+len(c.functions)+len(c.procedures)+len(c.synonyms))
-	for _, view := range c.views {
-		copiedObjects[strings.ToLower(view.FQTN())] = struct{}{}
-	}
-	for _, function := range c.functions {
-		copiedObjects[strings.ToLower(function.FQTN())] = struct{}{}
-	}
-	for _, procedure := range c.procedures {
-		copiedObjects[strings.ToLower(procedure.FQTN())] = struct{}{}
-	}
-	for _, synonym := range c.synonyms {
-		copiedObjects[strings.ToLower(synonym.FQTN())] = struct{}{}
-	}
-
-	for i := range c.procedures {
-		deps, err := c.resolveProgrammableDependencies(ctx, c.procedures[i].FQTN(), copiedObjects)
-		if err != nil {
-			return fmt.Errorf("resolve dependencies for %s: %w", c.procedures[i].FQTN(), err)
-		}
-		c.procedures[i].DependsOn = deps
-	}
-	return nil
 }
 
 func (c *copier) loadTriggers(ctx context.Context) ([]triggerMeta, error) {
@@ -711,43 +667,6 @@ ORDER BY OBJECT_SCHEMA_NAME(tr.object_id), tr.name;`
 	return triggers, nil
 }
 
-func (c *copier) resolveTriggerDependencies(ctx context.Context) error {
-	if len(c.triggers) == 0 {
-		return nil
-	}
-
-	triggerFQTNs := make(map[string]int, len(c.triggers))
-	for i, trigger := range c.triggers {
-		triggerFQTNs[strings.ToLower(trigger.FQTN())] = i
-	}
-
-	copiedObjects := make(map[string]struct{}, len(c.views)+len(c.functions)+len(c.procedures)+len(c.synonyms)+len(c.triggers))
-	for _, view := range c.views {
-		copiedObjects[strings.ToLower(view.FQTN())] = struct{}{}
-	}
-	for _, function := range c.functions {
-		copiedObjects[strings.ToLower(function.FQTN())] = struct{}{}
-	}
-	for _, procedure := range c.procedures {
-		copiedObjects[strings.ToLower(procedure.FQTN())] = struct{}{}
-	}
-	for _, synonym := range c.synonyms {
-		copiedObjects[strings.ToLower(synonym.FQTN())] = struct{}{}
-	}
-	for _, trigger := range c.triggers {
-		copiedObjects[strings.ToLower(trigger.FQTN())] = struct{}{}
-	}
-
-	for i := range c.triggers {
-		deps, err := c.resolveProgrammableDependencies(ctx, c.triggers[i].FQTN(), copiedObjects)
-		if err != nil {
-			return fmt.Errorf("resolve dependencies for %s: %w", c.triggers[i].FQTN(), err)
-		}
-		c.triggers[i].DependsOn = deps
-	}
-	return nil
-}
-
 func (c *copier) loadFunctions(ctx context.Context) ([]functionMeta, error) {
 	const sqlText = `
 SELECT
@@ -778,25 +697,10 @@ ORDER BY s.name, o.name;`
 			continue
 		}
 		fn.Definition = *def
-		if !c.shouldCopyTable(fn.Schema, fn.Name) {
-			continue
-		}
 		functions = append(functions, fn)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	functionFQTNs := make(map[string]int, len(functions))
-	for i, fn := range functions {
-		functionFQTNs[strings.ToLower(fn.FQTN())] = i
-	}
-	for i := range functions {
-		deps, err := c.resolveFunctionDependencies(ctx, functions[i], functionFQTNs)
-		if err != nil {
-			return nil, fmt.Errorf("resolve dependencies for %s: %w", functions[i].FQTN(), err)
-		}
-		functions[i].DependsOn = deps
 	}
 
 	return functions, nil
@@ -823,9 +727,6 @@ ORDER BY s.name, syn.name;`
 		var syn synonymMeta
 		if err := rows.Scan(&syn.Schema, &syn.Name, &syn.BaseObjectName); err != nil {
 			return nil, err
-		}
-		if !c.shouldCopyTable(syn.Schema, syn.Name) {
-			continue
 		}
 		synonyms = append(synonyms, syn)
 	}
@@ -871,71 +772,14 @@ func (s synonymMeta) FQTN() string {
 	return quoteIdent(s.Schema) + "." + quoteIdent(s.Name)
 }
 
-func (c *copier) resolveViewDependencies(ctx context.Context, v viewMeta, viewFQTNs map[string]int) ([]string, error) {
-	const sqlText = `
-SELECT
-	OBJECT_SCHEMA_NAME(d.referenced_id),
-	OBJECT_NAME(d.referenced_id)
-FROM sys.sql_expression_dependencies d
-WHERE d.referencing_id = OBJECT_ID(@p1)
-	AND d.referenced_id IS NOT NULL
-	AND d.referenced_minor_id = 0
-	AND EXISTS (SELECT 1 FROM sys.views v WHERE v.object_id = d.referenced_id)
-	AND d.referenced_class_desc = 'OBJECT_OR_COLUMN';`
-
-	rows, err := c.sourceDB.QueryContext(ctx, sqlText, v.FQTN())
-	if err != nil {
-		return nil, err
-	}
-	defer closeAndLog(rows, "view dependency rows")
-
-	var deps []string
-	seen := map[string]struct{}{}
-	for rows.Next() {
-		var schema, name string
-		if err := rows.Scan(&schema, &name); err != nil {
-			return nil, err
-		}
-		depFQTN := strings.ToLower(quoteIdent(schema) + "." + quoteIdent(name))
-		if _, ok := viewFQTNs[depFQTN]; ok {
-			if _, ok := seen[depFQTN]; ok {
-				continue
-			}
-			seen[depFQTN] = struct{}{}
-			deps = append(deps, depFQTN)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return deps, nil
-}
-
-func (c *copier) resolveFunctionDependencies(ctx context.Context, fn functionMeta, functionFQTNs map[string]int) ([]string, error) {
-	deps, err := c.resolveProgrammableDependencies(ctx, fn.FQTN(), functionFQTNsToSet(functionFQTNs))
-	if err != nil {
-		return nil, err
-	}
-	return deps, nil
-}
-
-func functionFQTNsToSet(functionFQTNs map[string]int) map[string]struct{} {
-	result := make(map[string]struct{}, len(functionFQTNs))
-	for fqtn := range functionFQTNs {
-		result[fqtn] = struct{}{}
-	}
-	return result
-}
-
 func (c *copier) resolveProgrammableDependencies(ctx context.Context, referencingFQTN string, candidateFQTNs map[string]struct{}) ([]string, error) {
 	const sqlText = `
 SELECT
-	OBJECT_SCHEMA_NAME(d.referenced_id),
-	OBJECT_NAME(d.referenced_id)
+	COALESCE(d.referenced_schema_name, OBJECT_SCHEMA_NAME(d.referenced_id)),
+	COALESCE(d.referenced_entity_name, OBJECT_NAME(d.referenced_id))
 FROM sys.sql_expression_dependencies d
 WHERE d.referencing_id = OBJECT_ID(@p1)
 	AND d.referenced_id IS NOT NULL
-	AND d.referenced_minor_id = 0
 	AND d.referenced_class_desc = 'OBJECT_OR_COLUMN';`
 
 	rows, err := c.sourceDB.QueryContext(ctx, sqlText, referencingFQTN)

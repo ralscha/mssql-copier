@@ -34,7 +34,6 @@ type persistedDockerConfig struct {
 	Persistent bool   `yaml:"persistent,omitempty"`
 	ComposeDir string `yaml:"compose-dir,omitempty"`
 	Port       int    `yaml:"port,omitempty"`
-	SAPassword string `yaml:"sa-password,omitempty"`
 }
 
 func writePersistedConfig(path string, cfg config) error {
@@ -83,7 +82,6 @@ func persistedDockerConfigFrom(cfg dockerTargetConfig) *persistedDockerConfig {
 		Persistent: cfg.Persistent,
 		ComposeDir: cfg.ComposeDir,
 		Port:       cfg.Port,
-		SAPassword: cfg.SAPassword,
 	}
 }
 
@@ -95,7 +93,6 @@ func persistedLLMConfig(cfg llmConfig) *yamlLLMConfig {
 		Provider:   cfg.Provider,
 		Model:      cfg.Model,
 		BaseURL:    cfg.BaseURL,
-		APIKey:     cfg.APIKey,
 		APIKeyEnv:  cfg.APIKeyEnv,
 		APIVersion: cfg.APIVersion,
 	}

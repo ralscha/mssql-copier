@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -1004,10 +1005,13 @@ func TestCopierIntegrationMixedObjects(t *testing.T) {
 	defer targetDB.Close()
 
 	schemaName := fmt.Sprintf("mixed_it_%d", time.Now().UnixNano())
-	typeFQTN := quoteIdent(schemaName) + ".[order_code]"
-	sequenceFQTN := quoteIdent(schemaName) + ".[order_seq]"
+	dependencySchemaName := schemaName + "_dependencies"
+	typeFQTN := quoteIdent(dependencySchemaName) + ".[order_code]"
+	sequenceFQTN := quoteIdent(dependencySchemaName) + ".[order_seq]"
+	lookupTableFQTN := quoteIdent(dependencySchemaName) + ".[order_lookup]"
 	tableFQTN := quoteIdent(schemaName) + ".[orders]"
 	viewFQTN := quoteIdent(schemaName) + ".[active_orders]"
+	helperFunctionFQTN := quoteIdent(schemaName) + ".[format_order_id]"
 	functionFQTN := quoteIdent(schemaName) + ".[active_count]"
 	procedureFQTN := quoteIdent(schemaName) + ".[count_active]"
 	synonymFQTN := quoteIdent(schemaName) + ".[orders_alias]"
@@ -1018,28 +1022,38 @@ func TestCopierIntegrationMixedObjects(t *testing.T) {
 			"IF OBJECT_ID(N'%s', 'FN') IS NOT NULL DROP FUNCTION %s; "+
 			"IF OBJECT_ID(N'%s', 'V') IS NOT NULL DROP VIEW %s; "+
 			"IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; "+
+			"IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; "+
+			"IF OBJECT_ID(N'%s', 'FN') IS NOT NULL DROP FUNCTION %s; "+
 			"IF OBJECT_ID(N'%s', 'SO') IS NOT NULL DROP SEQUENCE %s; "+
 			"IF TYPE_ID(N'%s') IS NOT NULL DROP TYPE %s; "+
+			"IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s'); "+
 			"IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s');",
 		escapeSQLString(synonymFQTN), synonymFQTN,
 		escapeSQLString(procedureFQTN), procedureFQTN,
 		escapeSQLString(functionFQTN), functionFQTN,
 		escapeSQLString(viewFQTN), viewFQTN,
 		escapeSQLString(tableFQTN), tableFQTN,
+		escapeSQLString(lookupTableFQTN), lookupTableFQTN,
+		escapeSQLString(helperFunctionFQTN), helperFunctionFQTN,
 		escapeSQLString(sequenceFQTN), sequenceFQTN,
 		escapeSQLString(typeFQTN), typeFQTN,
 		escapeSQLString(schemaName), quoteIdent(schemaName),
+		escapeSQLString(dependencySchemaName), quoteIdent(dependencySchemaName),
 	)
 	defer sourceDB.ExecContext(ctx, cleanup)
 	defer targetDB.ExecContext(ctx, cleanup)
 
 	seedStatements := []string{
 		fmt.Sprintf("CREATE SCHEMA %s;", quoteIdent(schemaName)),
+		fmt.Sprintf("CREATE SCHEMA %s;", quoteIdent(dependencySchemaName)),
 		fmt.Sprintf("CREATE TYPE %s FROM nvarchar(12) NULL;", typeFQTN),
 		fmt.Sprintf("CREATE SEQUENCE %s AS int START WITH 100 INCREMENT BY 5 MINVALUE 100 MAXVALUE 1000 NO CYCLE NO CACHE;", sequenceFQTN),
-		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL CONSTRAINT [DF_orders_id] DEFAULT NEXT VALUE FOR %s, [code] %s NOT NULL, [active] bit NOT NULL, CONSTRAINT [PK_orders] PRIMARY KEY CLUSTERED ([id] ASC));", tableFQTN, sequenceFQTN, typeFQTN),
+		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL CONSTRAINT [PK_order_lookup] PRIMARY KEY, [label] nvarchar(50) NOT NULL);", lookupTableFQTN),
+		fmt.Sprintf("INSERT INTO %s ([id], [label]) VALUES (100, N'active');", lookupTableFQTN),
+		fmt.Sprintf("CREATE FUNCTION %s (@value int) RETURNS int AS BEGIN RETURN @value END", helperFunctionFQTN),
+		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL CONSTRAINT [DF_orders_id] DEFAULT NEXT VALUE FOR %s, [code] %s NOT NULL, [active] bit NOT NULL, [formatted_id] AS %s([id]), CONSTRAINT [PK_orders] PRIMARY KEY CLUSTERED ([id] ASC));", tableFQTN, sequenceFQTN, typeFQTN, helperFunctionFQTN),
 		fmt.Sprintf("INSERT INTO %s ([code], [active]) VALUES (N'A-001', 1), (N'B-002', 0);", tableFQTN),
-		fmt.Sprintf("CREATE VIEW %s AS SELECT [id], [code] FROM %s WHERE [active] = 1;", viewFQTN, tableFQTN),
+		fmt.Sprintf("CREATE VIEW %s AS SELECT o.[id], o.[code], %s(o.[id]) AS [formatted_id], l.[label] AS [lookup_label] FROM %s o LEFT JOIN %s l ON l.[id] = o.[id] WHERE o.[active] = 1;", viewFQTN, helperFunctionFQTN, tableFQTN, lookupTableFQTN),
 		fmt.Sprintf("CREATE FUNCTION %s () RETURNS int AS BEGIN RETURN (SELECT COUNT(*) FROM %s) END", functionFQTN, viewFQTN),
 		fmt.Sprintf("CREATE PROCEDURE %s AS BEGIN SELECT %s() AS [count] END", procedureFQTN, functionFQTN),
 		fmt.Sprintf("CREATE SYNONYM %s FOR %s;", synonymFQTN, tableFQTN),
@@ -1047,6 +1061,105 @@ func TestCopierIntegrationMixedObjects(t *testing.T) {
 	for _, statement := range seedStatements {
 		if _, err := sourceDB.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("seed source: %v", err)
+		}
+	}
+
+	exportDir := t.TempDir()
+	excludedExporter := &copier{
+		cfg: config{
+			SourceDSN:      sourceDSN,
+			ExportDDLFile:  fmt.Sprintf("%s/B000__excluded_dependency.sql", exportDir),
+			Workers:        2,
+			BatchSize:      1000,
+			IncludeSchemas: []string{schemaName},
+			ExcludeTables:  []string{dependencySchemaName + ".order_lookup"},
+		},
+		sourceDB: sourceDB,
+	}
+	if err := excludedExporter.run(ctx); err == nil || !strings.Contains(err.Error(), "depends on excluded table") {
+		t.Fatalf("expected explicit dependency exclusion error, got %v", err)
+	}
+
+	flywayPath := fmt.Sprintf("%s/B001__mixed_schema.sql", exportDir)
+	exporter := &copier{
+		cfg: config{
+			SourceDSN:      sourceDSN,
+			ExportDDLFile:  flywayPath,
+			Workers:        2,
+			BatchSize:      1000,
+			Verbose:        false,
+			IncludeSchemas: []string{schemaName},
+		},
+		sourceDB: sourceDB,
+	}
+	if err := exporter.run(ctx); err != nil {
+		t.Fatalf("export Flyway baseline: %v", err)
+	}
+	flywaySQL, err := os.ReadFile(flywayPath)
+	if err != nil {
+		t.Fatalf("read Flyway baseline: %v", err)
+	}
+	if strings.Contains(string(flywaySQL), "--changeset") || !strings.Contains(string(flywaySQL), "\nGO\n") {
+		t.Fatalf("export is not Flyway SQL Server format:\n%s", flywaySQL)
+	}
+	for _, batch := range splitFlywaySQLServerBatches(string(flywaySQL)) {
+		if _, err := targetDB.ExecContext(ctx, batch); err != nil {
+			t.Fatalf("apply Flyway baseline batch:\n%s\nerror: %v", batch, err)
+		}
+	}
+	dataPath := fmt.Sprintf("%s/V002__mixed_data.sql", exportDir)
+	dataExporter := &copier{
+		cfg: config{
+			SourceDSN:      sourceDSN,
+			ExportDataFile: dataPath,
+			Workers:        2,
+			BatchSize:      1000,
+			Verbose:        false,
+			IncludeSchemas: []string{schemaName},
+		},
+		sourceDB: sourceDB,
+	}
+	if err := dataExporter.run(ctx); err != nil {
+		t.Fatalf("export streaming data migration: %v", err)
+	}
+	dataSQL, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatalf("read streaming data migration: %v", err)
+	}
+	if _, err := targetDB.ExecContext(ctx, string(dataSQL)); err != nil {
+		t.Fatalf("apply streaming data migration: %v", err)
+	}
+	var exportedRowCount int
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tableFQTN)).Scan(&exportedRowCount); err != nil {
+		t.Fatalf("check streaming data migration: %v", err)
+	}
+	if exportedRowCount != 2 {
+		t.Fatalf("streaming data migration copied %d rows, want 2", exportedRowCount)
+	}
+	var exportedDependencyCount int
+	if err := targetDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.types t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = @p1 AND t.name = @p2", dependencySchemaName, "order_code").Scan(&exportedDependencyCount); err != nil {
+		t.Fatalf("check dependency included in Flyway export: %v", err)
+	}
+	if exportedDependencyCount != 1 {
+		t.Fatalf("expected Flyway export to include cross-schema alias type, got %d", exportedDependencyCount)
+	}
+	var exportedLookupRows int
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", lookupTableFQTN)).Scan(&exportedLookupRows); err != nil {
+		t.Fatalf("check dependency-only table data export: %v", err)
+	}
+	if exportedLookupRows != 0 {
+		t.Fatalf("dependency-only table exported %d rows, want 0", exportedLookupRows)
+	}
+	if _, err := targetDB.ExecContext(ctx, cleanup); err != nil {
+		t.Fatalf("reset target after Flyway baseline test: %v", err)
+	}
+	for _, statement := range []string{
+		fmt.Sprintf("CREATE SCHEMA %s;", quoteIdent(dependencySchemaName)),
+		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL CONSTRAINT [PK_existing_order_lookup] PRIMARY KEY, [label] nvarchar(50) NOT NULL);", lookupTableFQTN),
+		fmt.Sprintf("INSERT INTO %s ([id], [label]) VALUES (999, N'preserve me');", lookupTableFQTN),
+	} {
+		if _, err := targetDB.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed existing target dependency: %v", err)
 		}
 	}
 
@@ -1097,11 +1210,18 @@ func TestCopierIntegrationMixedObjects(t *testing.T) {
 	}
 
 	var typeCount int
-	if err := targetDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.types t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = @p1 AND t.name = @p2", schemaName, "order_code").Scan(&typeCount); err != nil {
+	if err := targetDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.types t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = @p1 AND t.name = @p2", dependencySchemaName, "order_code").Scan(&typeCount); err != nil {
 		t.Fatalf("check copied alias type: %v", err)
 	}
 	if typeCount != 1 {
 		t.Fatalf("expected copied alias type to exist, got count %d", typeCount)
+	}
+	var dependencyOnlyRows int
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", lookupTableFQTN)).Scan(&dependencyOnlyRows); err != nil {
+		t.Fatalf("check copied dependency-only table: %v", err)
+	}
+	if dependencyOnlyRows != 1 {
+		t.Fatalf("dependency-only table has %d rows, want preserved target row", dependencyOnlyRows)
 	}
 
 	var sequenceRowID int
@@ -1153,6 +1273,26 @@ func sqlTestImage() string {
 		return "mcr.microsoft.com/azure-sql-edge:latest"
 	}
 	return "mcr.microsoft.com/mssql/server:2022-latest"
+}
+
+func splitFlywaySQLServerBatches(script string) []string {
+	var batches []string
+	var current strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "GO") {
+			if batch := strings.TrimSpace(current.String()); batch != "" {
+				batches = append(batches, batch)
+			}
+			current.Reset()
+			continue
+		}
+		current.WriteString(line)
+		current.WriteByte('\n')
+	}
+	if batch := strings.TrimSpace(current.String()); batch != "" {
+		batches = append(batches, batch)
+	}
+	return batches
 }
 
 func openTestDB(ctx context.Context, dsn string, maxConns int) (*sql.DB, error) {

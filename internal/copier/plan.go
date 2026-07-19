@@ -13,6 +13,7 @@ func (c *copier) printPlan() {
 		_, _ = fmt.Fprintf(os.Stdout, "  target: %s\n", c.cfg.TargetDSN)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "  tables selected: %d\n", len(c.tables))
+	_, _ = fmt.Fprintf(os.Stdout, "  tables selected for data: %d\n", len(c.dataTables()))
 	_, _ = fmt.Fprintf(os.Stdout, "  alias types selected: %d\n", len(c.aliasTypes))
 	_, _ = fmt.Fprintf(os.Stdout, "  table types selected: %d\n", len(c.tableTypes))
 	_, _ = fmt.Fprintf(os.Stdout, "  sequences selected: %d\n", len(c.sequences))
@@ -125,6 +126,9 @@ func (c *copier) printPlan() {
 }
 
 func formatTablePlan(table tableMeta, dropExisting bool) string {
+	if table.DependencyOnly {
+		return fmt.Sprintf("- %s | dependency-only | columns=%d | actions=create if missing, no data copy", table.FQTN(), len(table.Columns))
+	}
 	actions := []string{"create schema if needed", "create table", "copy data", "create post-data objects"}
 	if dropExisting {
 		actions = append([]string{"drop target table if present"}, actions...)

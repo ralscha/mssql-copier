@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-const flywayAuthor = "mssql-copier"
-
 type flywayChange struct {
 	id  string
 	sql string
@@ -41,15 +39,15 @@ func (c *copier) buildFlywayBaselineSQL() (string, error) {
 	}
 
 	var builder strings.Builder
+	builder.WriteString("-- mssql-copier Flyway SQL Server baseline\n")
+	builder.WriteString("-- Use a Flyway baseline or versioned migration filename, for example B001__initial_schema.sql.\n")
 	for _, change := range changes {
 		builder.WriteString("\n")
-		builder.WriteString("--changeset ")
-		builder.WriteString(flywayAuthor)
-		builder.WriteString(":")
+		builder.WriteString("-- object: ")
 		builder.WriteString(change.id)
-		builder.WriteString(" splitStatements:false\n")
-		builder.WriteString(strings.TrimSpace(change.sql))
 		builder.WriteString("\n")
+		builder.WriteString(strings.TrimSpace(change.sql))
+		builder.WriteString("\nGO\n")
 	}
 	return builder.String(), nil
 }
@@ -97,15 +95,16 @@ func (c *copier) flywayChanges() ([]flywayChange, error) {
 		})
 	}
 
-	for _, table := range c.tables {
-		sqlText, err := table.CreateTableSQL()
+	orderedSchemaObjects, err := c.schemaCreationOrder()
+	if err != nil {
+		return nil, fmt.Errorf("schema dependency resolution: %w", err)
+	}
+	for _, object := range orderedSchemaObjects {
+		change, err := c.flywayChangeForSchemaObject(object)
 		if err != nil {
 			return nil, err
 		}
-		changes = append(changes, flywayChange{
-			id:  "table-" + flywayIDPart(table.Schema) + "-" + flywayIDPart(table.Name),
-			sql: sqlText,
-		})
+		changes = append(changes, change)
 	}
 
 	selectedTables := selectedTableSet(c.tables)
@@ -147,46 +146,6 @@ func (c *copier) flywayChanges() ([]flywayChange, error) {
 		}
 	}
 
-	orderedViews, err := topologicalSortViews(c.views)
-	if err != nil {
-		return nil, fmt.Errorf("view dependency resolution: %w", err)
-	}
-	for _, view := range orderedViews {
-		changes = append(changes, flywayChange{
-			id:  "view-" + flywayIDPart(view.Schema) + "-" + flywayIDPart(view.Name),
-			sql: view.CreateViewSQL(),
-		})
-	}
-
-	orderedFunctions, err := topologicalSortFunctions(c.functions)
-	if err != nil {
-		return nil, fmt.Errorf("function dependency resolution: %w", err)
-	}
-	for _, function := range orderedFunctions {
-		changes = append(changes, flywayChange{
-			id:  "function-" + flywayIDPart(function.Schema) + "-" + flywayIDPart(function.Name),
-			sql: function.CreateFunctionSQL(),
-		})
-	}
-
-	for _, synonym := range c.synonyms {
-		changes = append(changes, flywayChange{
-			id:  "synonym-" + flywayIDPart(synonym.Schema) + "-" + flywayIDPart(synonym.Name),
-			sql: synonym.CreateSynonymSQL(),
-		})
-	}
-
-	orderedProcedures, err := topologicalSortProcedures(c.procedures)
-	if err != nil {
-		return nil, fmt.Errorf("procedure dependency resolution: %w", err)
-	}
-	for _, procedure := range orderedProcedures {
-		changes = append(changes, flywayChange{
-			id:  "procedure-" + flywayIDPart(procedure.Schema) + "-" + flywayIDPart(procedure.Name),
-			sql: procedure.CreateProcedureSQL(),
-		})
-	}
-
 	orderedTriggers, err := topologicalSortTriggers(c.triggers)
 	if err != nil {
 		return nil, fmt.Errorf("trigger dependency resolution: %w", err)
@@ -194,9 +153,9 @@ func (c *copier) flywayChanges() ([]flywayChange, error) {
 	for _, trigger := range orderedTriggers {
 		sqlText := trigger.CreateTriggerSQL()
 		if trigger.Disabled {
-			sqlText += "\n" + fmt.Sprintf("DISABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
+			sqlText += "\nGO\n" + fmt.Sprintf("DISABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
 		} else {
-			sqlText += "\n" + fmt.Sprintf("ENABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
+			sqlText += "\nGO\n" + fmt.Sprintf("ENABLE TRIGGER %s ON %s;", trigger.FQTN(), trigger.TableFQTN())
 		}
 		changes = append(changes, flywayChange{
 			id:  "trigger-" + flywayIDPart(trigger.Schema) + "-" + flywayIDPart(trigger.Name),
@@ -205,6 +164,32 @@ func (c *copier) flywayChanges() ([]flywayChange, error) {
 	}
 
 	return changes, nil
+}
+
+func (c *copier) flywayChangeForSchemaObject(object schemaObjectRef) (flywayChange, error) {
+	switch object.kind {
+	case "table":
+		item := c.tables[object.index]
+		sqlText, err := item.CreateTableSQL()
+		if err != nil {
+			return flywayChange{}, err
+		}
+		return flywayChange{id: "table-" + flywayIDPart(item.Schema) + "-" + flywayIDPart(item.Name), sql: sqlText}, nil
+	case "view":
+		item := c.views[object.index]
+		return flywayChange{id: "view-" + flywayIDPart(item.Schema) + "-" + flywayIDPart(item.Name), sql: item.CreateViewSQL()}, nil
+	case "function":
+		item := c.functions[object.index]
+		return flywayChange{id: "function-" + flywayIDPart(item.Schema) + "-" + flywayIDPart(item.Name), sql: item.CreateFunctionSQL()}, nil
+	case "synonym":
+		item := c.synonyms[object.index]
+		return flywayChange{id: "synonym-" + flywayIDPart(item.Schema) + "-" + flywayIDPart(item.Name), sql: item.CreateSynonymSQL()}, nil
+	case "procedure":
+		item := c.procedures[object.index]
+		return flywayChange{id: "procedure-" + flywayIDPart(item.Schema) + "-" + flywayIDPart(item.Name), sql: item.CreateProcedureSQL()}, nil
+	default:
+		return flywayChange{}, fmt.Errorf("unsupported schema object kind %q", object.kind)
+	}
 }
 
 func (c *copier) exportSchemaNames() []string {

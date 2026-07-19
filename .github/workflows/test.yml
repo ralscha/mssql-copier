@@ -6,18 +6,60 @@ on:
       - '**/*.go'
       - go.mod
       - go.sum
+      - .golangci.yml
+      - '.github/workflows/**'
   pull_request:
     paths:
       - '**/*.go'
       - go.mod
       - go.sum
+      - .golangci.yml
+      - '.github/workflows/**'
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [[ -n "$unformatted" ]]; then
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        run: docker run --rm -v "$PWD:/app" -w /app golangci/golangci-lint:v2.12.2 golangci-lint run --timeout 5m
+
+      - name: Scan for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
 
     steps:
@@ -31,3 +73,22 @@ jobs:
 
       - name: Run Go tests
         run: go test ./...
+
+      - name: Build executable
+        run: go build ./cmd/mssql-copier
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run race detector
+        run: go test -race ./...

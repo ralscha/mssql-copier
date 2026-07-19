@@ -87,7 +87,8 @@ func (c *copier) writeMarkdownReport(runDuration time.Duration) error {
 }
 
 func (c *copier) markdownReport(runDuration time.Duration) string {
-	reports := c.report.snapshot(c.tables)
+	dataTables := c.dataTables()
+	reports := c.report.snapshot(dataTables)
 	skippedIndexes := c.report.skippedIndexSnapshot()
 	type highlight struct {
 		table string
@@ -130,7 +131,8 @@ func (c *copier) markdownReport(runDuration time.Duration) string {
 	builder.WriteString("## Summary\n\n")
 	builder.WriteString("| Metric | Value |\n")
 	builder.WriteString("| --- | ---: |\n")
-	fmt.Fprintf(&builder, "| Selected tables | %d |\n", len(c.tables))
+	fmt.Fprintf(&builder, "| Selected tables | %d |\n", len(dataTables))
+	fmt.Fprintf(&builder, "| Dependency-only tables | %d |\n", len(c.tables)-len(dataTables))
 	fmt.Fprintf(&builder, "| Total rows copied | %d |\n", totalRows)
 	fmt.Fprintf(&builder, "| Approximate source rows | %d |\n", approxRows)
 	fmt.Fprintf(&builder, "| Bulk tables | %d |\n", bulkTables)
