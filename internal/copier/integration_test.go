@@ -1278,7 +1278,7 @@ func sqlTestImage() string {
 func splitFlywaySQLServerBatches(script string) []string {
 	var batches []string
 	var current strings.Builder
-	for _, line := range strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
 		if strings.EqualFold(strings.TrimSpace(line), "GO") {
 			if batch := strings.TrimSpace(current.String()); batch != "" {
 				batches = append(batches, batch)

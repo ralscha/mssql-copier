@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -292,10 +293,8 @@ func appendUniqueDependencies(existing []string, values []string) []string {
 
 func appendUniqueDependency(existing []string, value string) []string {
 	value = strings.ToLower(value)
-	for _, current := range existing {
-		if current == value {
-			return existing
-		}
+	if slices.Contains(existing, value) {
+		return existing
 	}
 	return append(existing, value)
 }
