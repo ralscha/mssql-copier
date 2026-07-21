@@ -135,5 +135,56 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 	assertOrder("CREATE OR ALTER FUNCTION [sales].[fn_order_count]", "CREATE SYNONYM [sales].[orders_alias]")
 	assertOrder("CREATE SYNONYM [sales].[orders_alias]", "CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders]")
 	assertOrder("CREATE OR ALTER PROCEDURE [sales].[p_refresh_orders]", "ALTER TABLE [sales].[orders] ADD CONSTRAINT [PK_orders]")
+	assertOrder("ALTER TABLE [sales].[customers] ADD CONSTRAINT [PK_customers]", "ALTER TABLE [sales].[orders] WITH CHECK ADD CONSTRAINT [FK_orders_customers]")
+	assertOrder("ALTER TABLE [sales].[orders] ADD CONSTRAINT [PK_orders]", "ALTER TABLE [sales].[orders] WITH CHECK ADD CONSTRAINT [FK_orders_customers]")
 	assertOrder("ALTER TABLE [sales].[orders] WITH CHECK ADD CONSTRAINT [FK_orders_customers]", "CREATE OR ALTER TRIGGER [sales].[trg_orders_audit]")
+}
+
+func TestBuildFlywayBaselineSQLForeignKeyAfterAllPrimaryKeys(t *testing.T) {
+	// Regression test: FK from orders→customers must come after customers' PK even when
+	// orders appears first in c.tables (i.e. higher row count or different sort order).
+	c := &copier{
+		cfg: config{ExportDDLFile: "baseline.sql"},
+		tables: []tableMeta{
+			{
+				Schema: "dbo",
+				Name:   "orders",
+				Columns: []columnMeta{
+					{Name: "id", SystemTypeName: "int", Nullable: false},
+					{Name: "customer_id", SystemTypeName: "int", Nullable: false},
+				},
+				PrimaryKey: &keyConstraint{Name: "PK_orders", Columns: []keyColumn{{Name: "id"}}},
+				ForeignKeys: []foreignKey{
+					{Name: "FK_orders_customers", Columns: []string{"customer_id"}, RefSchema: "dbo", RefTable: "customers", RefColumns: []string{"id"}, Trusted: true},
+				},
+			},
+			{
+				Schema: "dbo",
+				Name:   "customers",
+				Columns: []columnMeta{
+					{Name: "id", SystemTypeName: "int", Nullable: false},
+				},
+				PrimaryKey: &keyConstraint{Name: "PK_customers", Columns: []keyColumn{{Name: "id"}}},
+			},
+		},
+	}
+
+	got, err := c.buildFlywayBaselineSQL()
+	if err != nil {
+		t.Fatalf("buildFlywayBaselineSQL() unexpected error: %v", err)
+	}
+
+	pkCustomers := strings.Index(got, "ADD CONSTRAINT [PK_customers]")
+	pkOrders := strings.Index(got, "ADD CONSTRAINT [PK_orders]")
+	fkOrders := strings.Index(got, "ADD CONSTRAINT [FK_orders_customers]")
+
+	if pkCustomers == -1 || pkOrders == -1 || fkOrders == -1 {
+		t.Fatalf("expected PK_customers, PK_orders and FK_orders_customers in output:\n%s", got)
+	}
+	if pkCustomers >= fkOrders {
+		t.Errorf("PK_customers (pos %d) must appear before FK_orders_customers (pos %d)", pkCustomers, fkOrders)
+	}
+	if pkOrders >= fkOrders {
+		t.Errorf("PK_orders (pos %d) must appear before FK_orders_customers (pos %d)", pkOrders, fkOrders)
+	}
 }

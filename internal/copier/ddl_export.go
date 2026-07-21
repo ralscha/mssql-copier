@@ -131,6 +131,8 @@ func (c *copier) flywayChanges() ([]flywayChange, error) {
 				sql: table.IndexSQL(index),
 			})
 		}
+	}
+	for _, table := range c.tables {
 		for _, fk := range table.ForeignKeys {
 			if _, ok := selectedTables[strings.ToLower(quoteIdent(fk.RefSchema)+"."+quoteIdent(fk.RefTable))]; !ok {
 				continue
