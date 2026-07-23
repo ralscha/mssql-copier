@@ -22,12 +22,12 @@ type dataFaker struct {
 }
 
 type fakeDataRule struct {
-	selector     string
-	functionName string
-	lookupName   string
-	info         gofakeit.Info
-	params       gofakeit.MapParams
-	regex        *regexp.Regexp
+	selector       string
+	functionName   string
+	lookupName     string
+	info           gofakeit.Info
+	params         gofakeit.MapParams
+	regex          *regexp.Regexp
 	requiresUnique bool
 }
 
@@ -355,7 +355,7 @@ func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, 
 	if !c.cfg.EnableFakeData || c.dataFaker == nil {
 		return normalizeValue(value, col), nil
 	}
-	
+
 	rule, ruleFound := c.dataFaker.matchRule(table, col)
 	if !ruleFound {
 		return normalizeValue(value, col), nil
@@ -364,7 +364,7 @@ func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, 
 	// Generate a unique value if required
 	if rule.requiresUnique {
 		columnKey := normalizeFilterName(table.Schema + "." + table.Name + "." + col.Name)
-		for attempts := 0; attempts < 1000; attempts++ {
+		for range 1000 {
 			replacement, ok, err := c.dataFaker.fakeValue(c.faker, table, col)
 			if err != nil {
 				return nil, fmt.Errorf("generate fake value for %s.%s: %w", table.FQTN(), col.Name, err)
@@ -372,9 +372,9 @@ func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, 
 			if !ok {
 				return normalizeValue(value, col), nil
 			}
-			
+
 			finalValue := normalizeValue(truncateToColumnLength(replacement, col, table), col)
-			
+
 			// Check if value already exists
 			c.uniqueValuesMu.Lock()
 			if c.uniqueValues[columnKey] == nil {

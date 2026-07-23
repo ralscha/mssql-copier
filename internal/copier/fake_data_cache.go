@@ -141,7 +141,7 @@ func loadCachedFakeDataUnique(sourceDSN string) (map[string]bool, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	
+
 	unique := make(map[string]bool)
 	for _, entry := range entries {
 		if entry.RequireUnique {
