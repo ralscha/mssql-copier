@@ -54,23 +54,23 @@ type config struct {
 }
 
 type copier struct {
-	cfg              config
-	faker            *gofakeit.Faker
-	dataFaker        *dataFaker
-	sourceDB         *sql.DB
-	targetDB         *sql.DB
-	tables           []tableMeta
-	aliasTypes       []aliasTypeMeta
-	tableTypes       []tableTypeMeta
-	sequences        []sequenceMeta
-	views            []viewMeta
-	functions        []functionMeta
-	procedures       []procedureMeta
-	triggers         []triggerMeta
-	synonyms         []synonymMeta
-	report           copyReport
-	uniqueValuesMu   sync.Mutex
-	uniqueValues     map[string]map[any]bool // [table.schema.name.column] -> set of generated values
+	cfg            config
+	faker          *gofakeit.Faker
+	dataFaker      *dataFaker
+	sourceDB       *sql.DB
+	targetDB       *sql.DB
+	tables         []tableMeta
+	aliasTypes     []aliasTypeMeta
+	tableTypes     []tableTypeMeta
+	sequences      []sequenceMeta
+	views          []viewMeta
+	functions      []functionMeta
+	procedures     []procedureMeta
+	triggers       []triggerMeta
+	synonyms       []synonymMeta
+	report         copyReport
+	uniqueValuesMu sync.Mutex
+	uniqueValues   map[string]map[any]bool // [table.schema.name.column] -> set of generated values
 }
 
 type yamlConfig struct {
