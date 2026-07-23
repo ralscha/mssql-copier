@@ -516,8 +516,28 @@ func isLocalTargetDSN(targetDSN string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
+	if strings.EqualFold(host, ".") || strings.EqualFold(host, "(local)") || strings.EqualFold(host, "(localdb)") {
+		return true
+	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+
+	machineHost, err := os.Hostname()
+	if err != nil || strings.TrimSpace(machineHost) == "" {
+		return false
+	}
+	if strings.EqualFold(host, machineHost) {
+		return true
+	}
+	if idx := strings.Index(machineHost, "."); idx > 0 && strings.EqualFold(host, machineHost[:idx]) {
+		return true
+	}
+	if idx := strings.Index(host, "."); idx > 0 && strings.EqualFold(host[:idx], machineHost) {
+		return true
+	}
+	return false
 }
 
 func targetHostLabel(targetDSN string) string {

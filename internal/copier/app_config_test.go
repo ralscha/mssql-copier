@@ -472,11 +472,24 @@ func TestIsLocalTargetDSN(t *testing.T) {
 		{name: "ipv4 loopback url", dsn: "sqlserver://user:pass@127.0.0.1:1433?database=db", want: true},
 		{name: "ipv6 loopback url", dsn: "sqlserver://user:pass@[::1]:1433?database=db", want: true},
 		{name: "server equals localhost", dsn: "server=localhost;database=db", want: true},
+		{name: "server dot alias", dsn: "server=.\\SQLEXPRESS;database=db", want: true},
+		{name: "server local alias", dsn: "server=(local)\\SQLEXPRESS;database=db", want: true},
+		{name: "server localdb alias", dsn: "server=(localdb)\\MSSQLLocalDB;database=db", want: true},
 		{name: "server equals ipv4 loopback", dsn: "server=127.0.0.1,1433;database=db", want: true},
 		{name: "server equals ipv6 loopback", dsn: "server=[::1]:1433;database=db", want: true},
 		{name: "remote url", dsn: "sqlserver://user:pass@db.example.com:1433?database=db", want: false},
 		{name: "remote server", dsn: "server=tcp:db.example.com,1433;database=db", want: false},
 		{name: "empty", dsn: "", want: false},
+	}
+
+	if machineHost, err := os.Hostname(); err == nil && strings.TrimSpace(machineHost) != "" {
+		tests = append(tests,
+			struct {
+				name string
+				dsn  string
+				want bool
+			}{name: "server equals machine hostname", dsn: "server=" + machineHost + ";database=db", want: true},
+		)
 	}
 
 	for _, tc := range tests {
