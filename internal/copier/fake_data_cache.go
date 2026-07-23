@@ -28,6 +28,7 @@ type persistedFakeDataEntry struct {
 	FunctionName    string   `yaml:"function-name,omitempty"`
 	FunctionDisplay string   `yaml:"function-display,omitempty"`
 	FunctionParams  []string `yaml:"function-params,omitempty"`
+	RequireUnique   bool     `yaml:"require-unique,omitempty"`
 }
 
 func fakeDataCachePath() (string, error) {
@@ -111,6 +112,46 @@ func loadCachedFakeDataMappings(sourceDSN string) (map[string]string, bool, erro
 		return nil, true, nil
 	}
 	return mappings, true, nil
+}
+
+func loadCachedFakeDataUnique(sourceDSN string) (map[string]bool, bool, error) {
+	cacheKey := fakeDataCacheKey(sourceDSN)
+	if cacheKey == "" {
+		return nil, false, nil
+	}
+
+	path, err := fakeDataCachePath()
+	if err != nil {
+		return nil, false, err
+	}
+	// #nosec G304 -- path is resolved under the local executable directory for app-managed cache data.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read fake-data cache %q: %w", path, err)
+	}
+
+	var persisted persistedFakeDataMappings
+	if err := yaml.Unmarshal(raw, &persisted); err != nil {
+		return nil, false, fmt.Errorf("parse fake-data cache %q: %w", path, err)
+	}
+	entries, ok := persisted.Sources[cacheKey]
+	if !ok {
+		return nil, false, nil
+	}
+	
+	unique := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.RequireUnique {
+			unique[entry.Selector] = true
+		}
+	}
+	if len(unique) == 0 {
+		return nil, true, nil
+	}
+	return unique, true, nil
 }
 
 func saveCachedFakeDataEntries(sourceDSN string, entries []tuiFakeDataEntry) error {
@@ -207,6 +248,7 @@ func encodePersistedFakeDataEntries(entries []tuiFakeDataEntry) []persistedFakeD
 			FunctionName:    entry.FunctionName,
 			FunctionDisplay: entry.FunctionDisplay,
 			FunctionParams:  append([]string(nil), entry.FunctionParams...),
+			RequireUnique:   entry.RequireUnique,
 		})
 	}
 	return persisted
@@ -222,6 +264,7 @@ func decodePersistedFakeDataEntries(entries []persistedFakeDataEntry) []tuiFakeD
 			FunctionName:    entry.FunctionName,
 			FunctionDisplay: entry.FunctionDisplay,
 			FunctionParams:  append([]string(nil), entry.FunctionParams...),
+			RequireUnique:   entry.RequireUnique,
 		})
 	}
 	return decoded

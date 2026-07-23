@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewDataFakerRejectsUnknownFunction(t *testing.T) {
-	_, err := newDataFaker(map[string]string{"name": "NoSuchFunction"})
+	_, err := newDataFaker(map[string]string{"name": "NoSuchFunction"}, nil)
 	if err == nil {
 		t.Fatal("expected unknown function error")
 	}
@@ -16,7 +16,7 @@ func TestNewDataFakerRejectsUnknownFunction(t *testing.T) {
 }
 
 func TestNewDataFakerRejectsInvalidParameterValue(t *testing.T) {
-	_, err := newDataFaker(map[string]string{"body": "Words.LoremIpsumSentence;0"})
+	_, err := newDataFaker(map[string]string{"body": "Words.LoremIpsumSentence;0"}, nil)
 	if err == nil {
 		t.Fatal("expected invalid parameter error")
 	}
@@ -29,14 +29,14 @@ func TestNewDataFakerAcceptsSemicolonParameters(t *testing.T) {
 	_, err := newDataFaker(map[string]string{
 		"testcolumn":   "LoremIpsumSentence;10",
 		"secondcolumn": "Price;1;100",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("expected semicolon parameters to resolve, got %v", err)
 	}
 }
 
 func TestNewDataFakerRejectsTooManyParameters(t *testing.T) {
-	_, err := newDataFaker(map[string]string{"price": "Price;1;100;200"})
+	_, err := newDataFaker(map[string]string{"price": "Price;1;100;200"}, nil)
 	if err == nil {
 		t.Fatal("expected too-many-parameters error")
 	}
@@ -46,7 +46,7 @@ func TestNewDataFakerRejectsTooManyParameters(t *testing.T) {
 }
 
 func TestDataFakerUsesConfiguredParameters(t *testing.T) {
-	faker, err := newDataFaker(map[string]string{"body": "LoremIpsumSentence;10"})
+	faker, err := newDataFaker(map[string]string{"body": "LoremIpsumSentence;10"}, nil)
 	if err != nil {
 		t.Fatalf("newDataFaker() unexpected error: %v", err)
 	}
@@ -68,14 +68,14 @@ func TestDataFakerUsesConfiguredParameters(t *testing.T) {
 }
 
 func TestNewDataFakerAcceptsCategoryQualifiedFunction(t *testing.T) {
-	_, err := newDataFaker(map[string]string{"email": "Person.Email"})
+	_, err := newDataFaker(map[string]string{"email": "Person.Email"}, nil)
 	if err != nil {
 		t.Fatalf("expected Person.Email to resolve, got %v", err)
 	}
 }
 
 func TestNewDataFakerRejectsWrongCategoryQualifiedFunction(t *testing.T) {
-	_, err := newDataFaker(map[string]string{"email": "Company.Email"})
+	_, err := newDataFaker(map[string]string{"email": "Company.Email"}, nil)
 	if err == nil {
 		t.Fatal("expected wrong-category function error")
 	}
@@ -89,7 +89,7 @@ func TestDataFakerMatchesSpecificity(t *testing.T) {
 		"dbo.users.name": "Name",
 		"users.name":     "FirstName",
 		"name":           "LastName",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newDataFaker() unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestDataFakerMatchesSpecificity(t *testing.T) {
 }
 
 func TestDataFakerMatchesRegexSelector(t *testing.T) {
-	faker, err := newDataFaker(map[string]string{"name.*": "FirstName"})
+	faker, err := newDataFaker(map[string]string{"name.*": "FirstName"}, nil)
 	if err != nil {
 		t.Fatalf("newDataFaker() unexpected error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDataFakerMatchRuleReturnsWinningRule(t *testing.T) {
 	faker, err := newDataFaker(map[string]string{
 		"dbo.users.email": "Email",
 		"email":           "FirstName",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newDataFaker() unexpected error: %v", err)
 	}

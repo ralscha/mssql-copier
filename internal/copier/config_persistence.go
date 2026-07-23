@@ -112,6 +112,15 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return cloned
 }
 
+func cloneStringBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]bool, len(values))
+	maps.Copy(cloned, values)
+	return cloned
+}
+
 func stripDSNPassword(dsn string) string {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {

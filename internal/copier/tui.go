@@ -69,6 +69,7 @@ const (
 	formFieldBatchSize
 	formFieldVerbose
 	formFieldDropExisting
+	formFieldEnableFakeData
 	formFieldIncludeSchemas
 	formFieldExcludeSchemas
 	formFieldIncludeTables
@@ -110,6 +111,8 @@ type tuiFakeDataEntry struct {
 	FunctionName    string
 	FunctionDisplay string
 	FunctionParams  []string
+	HasUnique       bool
+	RequireUnique   bool
 }
 
 type fakeFunctionOption struct {
@@ -148,27 +151,28 @@ var tuiExecutionMu sync.Mutex
 var runTUIExecution = executeTUIExecution
 
 type tuiModel struct {
-	cfg               config
-	form              tuiFormState
-	screen            tuiScreen
-	formFocus         int
-	status            string
-	width             int
-	height            int
-	fakeDataEntries   []tuiFakeDataEntry
-	pickerTarget      int
-	pickerCursor      int
-	paramTarget       int
-	paramOption       fakeFunctionOption
-	fakeFunctions     []fakeFunctionOption
-	preservedFakeData map[string]string
-	runInProgress     bool
-	currentLogPath    string
-	recentLogPaths    []string
-	quitting          bool
-	logTailLines      []string
-	logTailScroll     int
-	logPanelFocused   bool
+	cfg                      config
+	form                     tuiFormState
+	screen                   tuiScreen
+	formFocus                int
+	status                   string
+	width                    int
+	height                   int
+	fakeDataEntries          []tuiFakeDataEntry
+	pickerTarget             int
+	pickerCursor             int
+	paramTarget              int
+	paramOption              fakeFunctionOption
+	fakeFunctions            []fakeFunctionOption
+	preservedFakeData        map[string]string
+	preservedUniqueSelectors map[string]bool
+	runInProgress            bool
+	currentLogPath           string
+	recentLogPaths           []string
+	quitting                 bool
+	logTailLines             []string
+	logTailScroll            int
+	logPanelFocused          bool
 
 	// Bubbles v2 components.
 	formInputs    []textinput.Model
@@ -344,21 +348,32 @@ func newTUIModel(cfg config) tuiModel {
 	s.Spinner = spinner.Dot
 	s.Style = spinnerStyle
 
+	// Load cached fake data mappings if a source DSN is available
+	if cfg.SourceDSN != "" {
+		if cachedFakeData, found, err := loadCachedFakeDataMappings(cfg.SourceDSN); err == nil && found {
+			cfg.FakeData = cachedFakeData
+		}
+		if cachedUnique, found, err := loadCachedFakeDataUnique(cfg.SourceDSN); err == nil && found {
+			cfg.FakeDataUnique = cachedUnique
+		}
+	}
+
 	return tuiModel{
-		cfg:               cfg,
-		form:              form,
-		screen:            tuiScreenForm,
-		formFocus:         formFieldSourceServer,
-		width:             100,
-		height:            30,
-		formInputs:        formInputs,
-		fakeDataTable:     fakeDataTable,
-		pickerInput:       pickerInput,
-		paramInput:        paramInput,
-		fakeFunctions:     availableFakeFunctionOptions(),
-		preservedFakeData: preserveNonFullFakeData(cfg.FakeData),
-		recentLogPaths:    listRecentTUILogPaths(exportPath, 5),
-		spinner:           s,
+		cfg:                      cfg,
+		form:                     form,
+		preservedUniqueSelectors: cloneStringBoolMap(cfg.FakeDataUnique),
+		screen:                   tuiScreenForm,
+		formFocus:                formFieldSourceServer,
+		width:                    100,
+		height:                   30,
+		formInputs:               formInputs,
+		fakeDataTable:            fakeDataTable,
+		pickerInput:              pickerInput,
+		paramInput:               paramInput,
+		fakeFunctions:            availableFakeFunctionOptions(),
+		preservedFakeData:        preserveNonFullFakeData(cfg.FakeData),
+		recentLogPaths:           listRecentTUILogPaths(exportPath, 5),
+		spinner:                  s,
 	}
 }
 
@@ -599,6 +614,9 @@ func (m tuiModel) formView() string {
 	if m.isFormFieldVisible(formFieldDropExisting) {
 		b.WriteString(m.formBoolRow(formFieldDropExisting, "Drop existing", m.cfg.DropExisting))
 	}
+	if m.isFormFieldVisible(formFieldEnableFakeData) {
+		b.WriteString(m.formBoolRow(formFieldEnableFakeData, "Enable fake data", m.cfg.EnableFakeData))
+	}
 	b.WriteString(m.formTextRow(formFieldIncludeSchemas, "Include schemas"))
 	b.WriteString(m.formTextRow(formFieldExcludeSchemas, "Exclude schemas"))
 	b.WriteString(m.formTextRow(formFieldIncludeTables, "Include tables"))
@@ -798,7 +816,7 @@ func (m tuiModel) configLinesEstimate() int {
 		formFieldTargetTrustCert, formFieldTargetOptions,
 		formFieldDockerDir, formFieldDockerPort, formFieldDockerPersistent, formFieldDockerPassword,
 		formFieldWorkers, formFieldBatchSize, formFieldVerbose,
-		formFieldDropExisting,
+		formFieldDropExisting, formFieldEnableFakeData,
 		formFieldIncludeSchemas, formFieldExcludeSchemas,
 		formFieldIncludeTables, formFieldExcludeTables,
 		formFieldExportDDLPath, formFieldExportDataPath, formFieldExportDataRows,
@@ -965,7 +983,7 @@ func (m tuiModel) isFormFieldTextInput(field int) bool {
 	switch field {
 	case formFieldRunMode, formFieldTargetType,
 		formFieldDockerPersistent, formFieldDockerPassword,
-		formFieldVerbose, formFieldDropExisting,
+		formFieldVerbose, formFieldDropExisting, formFieldEnableFakeData,
 		formFieldEditFakeData, formFieldExportConfig, formFieldStartCopy:
 		return false
 	default:
@@ -986,12 +1004,12 @@ func (m tuiModel) isFormFieldVisible(field int) bool {
 		return runMode.showsCopyExecutionSettings()
 	case formFieldDropExisting:
 		return runMode.allowsDropExisting()
+	case formFieldEnableFakeData, formFieldEditFakeData:
+		return runMode.allowsFakeData()
 	case formFieldExportDDLPath:
 		return runMode == tuiRunModeExportDDL || runMode == tuiRunModeExportDDLData
 	case formFieldExportDataPath, formFieldExportDataRows:
 		return runMode == tuiRunModeExportDDLData
-	case formFieldEditFakeData:
-		return runMode.allowsFakeData()
 	default:
 		return true
 	}
@@ -1053,6 +1071,8 @@ func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
 		m.cfg.Verbose = !m.cfg.Verbose
 	case formFieldDropExisting:
 		m.cfg.DropExisting = !m.cfg.DropExisting
+	case formFieldEnableFakeData:
+		m.cfg.EnableFakeData = !m.cfg.EnableFakeData
 	case formFieldEditFakeData:
 		cfg, err := m.configFromForm(true, false)
 		if err != nil {
@@ -1192,6 +1212,14 @@ func (m *tuiModel) rebuildFakeDataTable() {
 			if len(entry.FunctionParams) > 0 {
 				fakerName += "; " + strings.Join(entry.FunctionParams, ";")
 			}
+			// Add unique indicator
+			if entry.HasUnique {
+				if entry.RequireUnique {
+					fakerName += " [U*]" // Enforced unique
+				} else {
+					fakerName += " [U]" // Optional unique
+				}
+			}
 		}
 		rows[i] = table.Row{entry.Display, entry.TypeName, fakerName}
 	}
@@ -1247,6 +1275,13 @@ func (m tuiModel) configFromForm(requireSource bool, requireTarget bool) (config
 		cfg.FakeData = cachedFakeData
 	} else {
 		cfg.FakeData = nil
+	}
+	if cachedUnique, found, cacheErr := loadCachedFakeDataUnique(cfg.SourceDSN); cacheErr != nil {
+		return config{}, cacheErr
+	} else if found {
+		cfg.FakeDataUnique = cachedUnique
+	} else {
+		cfg.FakeDataUnique = cloneStringBoolMap(m.preservedUniqueSelectors)
 	}
 	if requireSource && cfg.SourceDSN == "" {
 		return config{}, fmt.Errorf("source DSN is required")
@@ -1363,6 +1398,23 @@ func (m tuiModel) updateFakeData(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Cleared the faker selection for the active column."
 		}
 		return m, nil
+	case "u":
+		cursor := m.fakeDataTable.Cursor()
+		if cursor >= 0 && cursor < len(m.fakeDataEntries) && m.fakeDataEntries[cursor].FunctionName != "" {
+			if !m.fakeDataEntries[cursor].HasUnique {
+				m.status = "This column does not have a unique constraint or index."
+				return m, nil
+			}
+			m.fakeDataEntries[cursor].RequireUnique = !m.fakeDataEntries[cursor].RequireUnique
+			m.preservedUniqueSelectors[m.fakeDataEntries[cursor].Selector] = m.fakeDataEntries[cursor].RequireUnique
+			m.rebuildFakeDataTable()
+			if m.fakeDataEntries[cursor].RequireUnique {
+				m.status = "Enabled unique value generation for this column."
+			} else {
+				m.status = "Disabled unique value generation for this column."
+			}
+		}
+		return m, nil
 	case "a":
 		if !m.cfg.LLM.isConfigured() {
 			m.status = errString(m.cfg.LLM.configurationError(), "LLM auto-select is not configured.")
@@ -1402,7 +1454,7 @@ func (m tuiModel) fakeDataView() string {
 	var b strings.Builder
 	b.WriteString(m.fakeDataTable.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  up/dn navigate  |  enter pick faker  |  x clear  |  a auto-select LLM  |  s/q back"))
+	b.WriteString(helpStyle.Render("  up/dn navigate  |  enter pick faker  |  u toggle unique  |  x clear  |  a auto-select LLM  |  s/q back"))
 	return b.String()
 }
 
@@ -1731,7 +1783,7 @@ func listRecentTUILogPaths(configPath string, limit int) []string {
 }
 
 func loadFakeDataEntries(cfg config) ([]tuiFakeDataEntry, error) {
-	dataFaker, err := newDataFaker(cfg.FakeData)
+	dataFaker, err := newDataFaker(cfg.FakeData, cfg.FakeDataUnique)
 	if err != nil {
 		return nil, err
 	}
@@ -1762,15 +1814,18 @@ func loadFakeDataEntries(cfg config) ([]tuiFakeDataEntry, error) {
 			if !col.Copyable {
 				continue
 			}
+			selector := normalizeFilterName(table.Schema + "." + table.Name + "." + col.Name)
 			entry := tuiFakeDataEntry{
-				Selector: normalizeFilterName(table.Schema + "." + table.Name + "." + col.Name),
-				Display:  table.FQTN() + "." + quoteIdent(col.Name),
-				TypeName: displayColumnType(col),
+				Selector:  selector,
+				Display:   table.FQTN() + "." + quoteIdent(col.Name),
+				TypeName:  displayColumnType(col),
+				HasUnique: columnHasUniqueConstraint(table, col),
 			}
 			if rule, ok := dataFaker.matchRule(table, col); ok {
 				entry.FunctionName = rule.lookupName
 				entry.FunctionDisplay = rule.info.Display
 				entry.FunctionParams = flattenFakeParams(rule.info, rule.params)
+				entry.RequireUnique = rule.requiresUnique
 			}
 			entries = append(entries, entry)
 		}

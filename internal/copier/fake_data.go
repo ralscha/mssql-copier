@@ -28,9 +28,10 @@ type fakeDataRule struct {
 	info         gofakeit.Info
 	params       gofakeit.MapParams
 	regex        *regexp.Regexp
+	requiresUnique bool
 }
 
-func newDataFaker(configured map[string]string) (*dataFaker, error) {
+func newDataFaker(configured map[string]string, uniqueSelectors map[string]bool) (*dataFaker, error) {
 	if len(configured) == 0 {
 		return nil, nil
 	}
@@ -51,6 +52,10 @@ func newDataFaker(configured map[string]string) (*dataFaker, error) {
 		rule, target, err := compileFakeDataRule(selector, configured[selector])
 		if err != nil {
 			return nil, err
+		}
+		// Set the requiresUnique flag based on uniqueSelectors or if column has unique constraint
+		if uniqueSelectors != nil && uniqueSelectors[normalizeFilterName(selector)] {
+			rule.requiresUnique = true
 		}
 		switch target {
 		case "full":
@@ -294,16 +299,29 @@ func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bo
 	columnName := normalizeFilterName(col.Name)
 
 	if rule, ok := f.fullNameRules[fullName]; ok {
+		// Enforce unique if column has unique constraint/index
+		if columnHasUniqueConstraint(table, col) {
+			rule.requiresUnique = true
+		}
 		return rule, true
 	}
 	if rule, ok := f.tableNameRules[tableName]; ok {
+		if columnHasUniqueConstraint(table, col) {
+			rule.requiresUnique = true
+		}
 		return rule, true
 	}
 	if rule, ok := f.columnRules[columnName]; ok {
+		if columnHasUniqueConstraint(table, col) {
+			rule.requiresUnique = true
+		}
 		return rule, true
 	}
 	for _, rule := range f.regexRules {
 		if rule.regex.MatchString(fullName) || rule.regex.MatchString(tableName) || rule.regex.MatchString(columnName) {
+			if columnHasUniqueConstraint(table, col) {
+				rule.requiresUnique = true
+			}
 			return rule, true
 		}
 	}
@@ -311,10 +329,68 @@ func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bo
 	return fakeDataRule{}, false
 }
 
+func columnHasUniqueConstraint(table tableMeta, col columnMeta) bool {
+	// Check primary key
+	if table.PrimaryKey != nil {
+		for _, keycol := range table.PrimaryKey.Columns {
+			if keycol.Name == col.Name {
+				return true
+			}
+		}
+	}
+	// Check unique indexes
+	for _, idx := range table.Indexes {
+		if idx.Unique {
+			for _, keycol := range idx.KeyColumns {
+				if keycol.Name == col.Name {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, error) {
-	if c.dataFaker == nil {
+	if !c.cfg.EnableFakeData || c.dataFaker == nil {
 		return normalizeValue(value, col), nil
 	}
+	
+	rule, ruleFound := c.dataFaker.matchRule(table, col)
+	if !ruleFound {
+		return normalizeValue(value, col), nil
+	}
+
+	// Generate a unique value if required
+	if rule.requiresUnique {
+		columnKey := normalizeFilterName(table.Schema + "." + table.Name + "." + col.Name)
+		for attempts := 0; attempts < 1000; attempts++ {
+			replacement, ok, err := c.dataFaker.fakeValue(c.faker, table, col)
+			if err != nil {
+				return nil, fmt.Errorf("generate fake value for %s.%s: %w", table.FQTN(), col.Name, err)
+			}
+			if !ok {
+				return normalizeValue(value, col), nil
+			}
+			
+			finalValue := normalizeValue(truncateToColumnLength(replacement, col, table), col)
+			
+			// Check if value already exists
+			c.uniqueValuesMu.Lock()
+			if c.uniqueValues[columnKey] == nil {
+				c.uniqueValues[columnKey] = make(map[any]bool)
+			}
+			if !c.uniqueValues[columnKey][finalValue] {
+				c.uniqueValues[columnKey][finalValue] = true
+				c.uniqueValuesMu.Unlock()
+				return finalValue, nil
+			}
+			c.uniqueValuesMu.Unlock()
+		}
+		return nil, fmt.Errorf("could not generate unique value for %s.%s after 1000 attempts", table.FQTN(), col.Name)
+	}
+
+	// Non-unique value generation
 	replacement, ok, err := c.dataFaker.fakeValue(c.faker, table, col)
 	if err != nil {
 		return nil, fmt.Errorf("generate fake value for %s.%s: %w", table.FQTN(), col.Name, err)

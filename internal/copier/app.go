@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
@@ -45,27 +46,31 @@ type config struct {
 	ExcludeSchemas []string
 	IncludeTables  []string
 	ExcludeTables  []string
+	EnableFakeData bool
 	FakeData       map[string]string
+	FakeDataUnique map[string]bool
 	LLM            llmConfig
 	Docker         dockerTargetConfig
 }
 
 type copier struct {
-	cfg        config
-	faker      *gofakeit.Faker
-	dataFaker  *dataFaker
-	sourceDB   *sql.DB
-	targetDB   *sql.DB
-	tables     []tableMeta
-	aliasTypes []aliasTypeMeta
-	tableTypes []tableTypeMeta
-	sequences  []sequenceMeta
-	views      []viewMeta
-	functions  []functionMeta
-	procedures []procedureMeta
-	triggers   []triggerMeta
-	synonyms   []synonymMeta
-	report     copyReport
+	cfg              config
+	faker            *gofakeit.Faker
+	dataFaker        *dataFaker
+	sourceDB         *sql.DB
+	targetDB         *sql.DB
+	tables           []tableMeta
+	aliasTypes       []aliasTypeMeta
+	tableTypes       []tableTypeMeta
+	sequences        []sequenceMeta
+	views            []viewMeta
+	functions        []functionMeta
+	procedures       []procedureMeta
+	triggers         []triggerMeta
+	synonyms         []synonymMeta
+	report           copyReport
+	uniqueValuesMu   sync.Mutex
+	uniqueValues     map[string]map[any]bool // [table.schema.name.column] -> set of generated values
 }
 
 type yamlConfig struct {
@@ -81,7 +86,9 @@ type yamlConfig struct {
 	ExcludeSchemas []string          `yaml:"exclude-schemas"`
 	IncludeTables  []string          `yaml:"include-tables"`
 	ExcludeTables  []string          `yaml:"exclude-tables"`
+	EnableFakeData *bool             `yaml:"enable-fake-data"`
 	FakeData       map[string]string `yaml:"fake-data"`
+	FakeDataUnique []string          `yaml:"fake-data-unique"`
 	LLM            *yamlLLMConfig    `yaml:"llm"`
 	Docker         *yamlDockerConfig `yaml:"docker"`
 	ExportDDLFile  *string           `yaml:"export-ddl"`
@@ -117,7 +124,7 @@ func executeConfig(cfg config) error {
 	if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
 		return err
 	}
-	dataFaker, err := newDataFaker(cfg.FakeData)
+	dataFaker, err := newDataFaker(cfg.FakeData, cfg.FakeDataUnique)
 	if err != nil {
 		return err
 	}
@@ -143,11 +150,12 @@ func executeConfig(cfg config) error {
 	}
 
 	c := &copier{
-		cfg:       cfg,
-		faker:     gofakeit.New(0),
-		dataFaker: dataFaker,
-		sourceDB:  sourceDB,
-		targetDB:  targetDB,
+		cfg:          cfg,
+		faker:        gofakeit.New(0),
+		dataFaker:    dataFaker,
+		sourceDB:     sourceDB,
+		targetDB:     targetDB,
+		uniqueValues: make(map[string]map[any]bool),
 	}
 
 	if err := c.run(ctx); err != nil {
@@ -198,6 +206,10 @@ func parseFlags() config {
 	}
 	if cfg.BatchSize < 1 {
 		cfg.BatchSize = 5000
+	}
+	// Default EnableFakeData to true if there are fake data rules defined
+	if !cfg.EnableFakeData && len(cfg.FakeData) > 0 {
+		cfg.EnableFakeData = true
 	}
 	return cfg
 }
@@ -347,11 +359,15 @@ func (yamlCfg yamlConfig) applyTo(cfg *config) {
 	if yamlCfg.DropExisting != nil {
 		cfg.DropExisting = *yamlCfg.DropExisting
 	}
+	if yamlCfg.EnableFakeData != nil {
+		cfg.EnableFakeData = *yamlCfg.EnableFakeData
+	}
 	cfg.IncludeSchemas = normalizeList(yamlCfg.IncludeSchemas)
 	cfg.ExcludeSchemas = normalizeList(yamlCfg.ExcludeSchemas)
 	cfg.IncludeTables = normalizeList(yamlCfg.IncludeTables)
 	cfg.ExcludeTables = normalizeList(yamlCfg.ExcludeTables)
 	cfg.FakeData = normalizeFakeData(yamlCfg.FakeData)
+	cfg.FakeDataUnique = normalizeFakeDataUnique(yamlCfg.FakeDataUnique)
 	cfg.LLM = normalizeLLMConfig(yamlCfg.LLM)
 	cfg.Docker = normalizeDockerConfig(yamlCfg.Docker)
 	if yamlCfg.ExportDDLFile != nil {
@@ -398,6 +414,23 @@ func normalizeFakeData(values map[string]string) map[string]string {
 		return nil
 	}
 	return normalized
+}
+
+func normalizeFakeDataUnique(values []string) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	unique := make(map[string]bool, len(values))
+	for _, selector := range values {
+		sel := normalizeFilterName(selector)
+		if sel != "" {
+			unique[sel] = true
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	return unique
 }
 
 func (cfg config) requiresTarget() bool {
