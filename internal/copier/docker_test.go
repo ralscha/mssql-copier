@@ -45,6 +45,38 @@ func TestReconcileDockerTargetConfigKeepsConfiguredPasswordWithoutComposeFile(t 
 	}
 }
 
+func TestDockerTargetDSNUsesSourceDatabase(t *testing.T) {
+	adminDSN := "sqlserver://sa:secret@localhost:1435?database=master&encrypt=disable"
+	tests := []struct {
+		name      string
+		sourceDSN string
+	}{
+		{name: "URL DSN", sourceDSN: "sqlserver://user:pass@source:1433?database=testdb"},
+		{name: "ADO DSN", sourceDSN: "server=source;database=testdb;user id=user"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := dockerTargetDSN(adminDSN, tc.sourceDSN)
+			if err != nil {
+				t.Fatalf("dockerTargetDSN() error = %v", err)
+			}
+			if gotName := sqlServerDSNDatabaseName(got); gotName != "testdb" {
+				t.Fatalf("target database = %q, want testdb", gotName)
+			}
+		})
+	}
+}
+
+func TestDockerTargetDSNRequiresSourceDatabase(t *testing.T) {
+	_, err := dockerTargetDSN(
+		"sqlserver://sa:secret@localhost:1435?database=master&encrypt=disable",
+		"server=source;user id=user",
+	)
+	if err == nil {
+		t.Fatal("expected source DSN without a database to be rejected")
+	}
+}
+
 func writeFile(path string, content []byte) error {
 	return os.WriteFile(path, content, 0o600)
 }

@@ -46,6 +46,8 @@ When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 su
 
 If the target DSN names a database that does not exist yet, the copier first connects to `master` on that same SQL Server instance and creates the database automatically before it opens the target connection.
 
+Docker targets preserve the source database name. For example, copying from a source database named `testdb` creates and populates `testdb` in the Docker SQL Server instance. Copy mode rejects missing target database names and SQL Server system databases (`master`, `model`, `msdb`, and `tempdb`) as targets.
+
 The form supports four run modes: `copy`, `plan`, `ddl`, and `ddl+data`. When target type is `local`, the TUI only accepts loopback target addresses such as `localhost`, `127.0.0.1`, or `::1`.
 
 Inside the fake-data editor, the TUI shows copyable source columns and lets you assign exact `schema.table.column` faker rules from the supported `gofakeit` catalog. Functions with parameters can be configured directly in the TUI using semicolon-separated argument values in declared order. When an `llm` config is present and usable, the editor also exposes an auto-select action that asks the configured model to pre-fill faker choices for likely sensitive columns. Fake-data editing is available in `copy` and `ddl+data` modes.

@@ -303,6 +303,24 @@ func TestConfigValidateSameSourceAndTarget(t *testing.T) {
 	}
 }
 
+func TestValidateCopyTargetDatabase(t *testing.T) {
+	for _, databaseName := range []string{"master", "MODEL", "msdb", "TempDB"} {
+		t.Run(databaseName, func(t *testing.T) {
+			dsn := "server=localhost;database=" + databaseName
+			if err := validateCopyTargetDatabase(dsn); err == nil {
+				t.Fatalf("expected system database %q to be rejected", databaseName)
+			}
+		})
+	}
+
+	if err := validateCopyTargetDatabase("server=localhost"); err == nil {
+		t.Fatal("expected target DSN without a database to be rejected")
+	}
+	if err := validateCopyTargetDatabase("server=localhost;database=testdb"); err != nil {
+		t.Fatalf("expected application database to be accepted: %v", err)
+	}
+}
+
 func TestConfigValidateExportDataRows(t *testing.T) {
 	tests := []struct {
 		name string

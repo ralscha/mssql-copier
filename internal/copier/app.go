@@ -115,11 +115,19 @@ func executeConfig(cfg config) error {
 		if err := cfg.Docker.ensurePassword(); err != nil {
 			return fmt.Errorf("generate docker SA password: %w", err)
 		}
-		dsn, err := setupDockerTarget(cfg.Docker)
+		adminDSN, err := setupDockerTarget(cfg.Docker)
 		if err != nil {
 			return fmt.Errorf("setup docker target: %w", err)
 		}
-		cfg.TargetDSN = dsn
+		cfg.TargetDSN, err = dockerTargetDSN(adminDSN, cfg.SourceDSN)
+		if err != nil {
+			return fmt.Errorf("configure docker target database: %w", err)
+		}
+	}
+	if cfg.requiresTarget() {
+		if err := validateCopyTargetDatabase(cfg.TargetDSN); err != nil {
+			return err
+		}
 	}
 	if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
 		return err
@@ -455,6 +463,27 @@ func sameSourceAndTargetDatabase(sourceDSN, targetDSN string) bool {
 	return strings.EqualFold(src.Server, dst.Server) &&
 		srcPort == dstPort &&
 		strings.EqualFold(src.Database, dst.Database)
+}
+
+func dockerTargetDSN(adminDSN, sourceDSN string) (string, error) {
+	databaseName := sqlServerDSNDatabaseName(sourceDSN)
+	if databaseName == "" {
+		return "", fmt.Errorf("source DSN must name a database")
+	}
+	return sqlServerDSNWithDatabase(adminDSN, databaseName)
+}
+
+func validateCopyTargetDatabase(targetDSN string) error {
+	databaseName := sqlServerDSNDatabaseName(targetDSN)
+	if databaseName == "" {
+		return fmt.Errorf("target DSN must name a database")
+	}
+	switch strings.ToLower(databaseName) {
+	case "master", "model", "msdb", "tempdb":
+		return fmt.Errorf("system database %q cannot be used as a copy target", databaseName)
+	default:
+		return nil
+	}
 }
 
 func (cfg config) validate() error {
