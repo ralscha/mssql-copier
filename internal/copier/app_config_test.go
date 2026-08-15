@@ -167,6 +167,35 @@ func TestWritePersistedConfigStripsPassword(t *testing.T) {
 	}
 }
 
+func TestPortableDockerConfigRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "portable.yml")
+	want := dockerTargetConfig{
+		Enabled:    true,
+		Persistent: true,
+		Portable:   true,
+		ComposeDir: "./docker-work",
+		BundleDir:  "./database-bundle",
+		Port:       1435,
+		SAPassword: "not-exported",
+	}
+	if err := writePersistedConfig(configPath, config{Workers: 2, BatchSize: 5000, Docker: want}); err != nil {
+		t.Fatal(err)
+	}
+	yamlCfg, loaded, err := loadYAMLConfig(configPath, true)
+	if err != nil || !loaded {
+		t.Fatalf("load portable config: loaded=%v err=%v", loaded, err)
+	}
+	var got config
+	yamlCfg.applyTo(&got)
+	if !got.Docker.Portable || !got.Docker.Persistent || got.Docker.ComposeDir != want.ComposeDir || got.Docker.BundleDir != want.BundleDir || got.Docker.Port != want.Port {
+		t.Fatalf("Docker config = %#v, want %#v", got.Docker, want)
+	}
+	if got.Docker.SAPassword != "" {
+		t.Fatalf("exported Docker password = %q", got.Docker.SAPassword)
+	}
+}
+
 func TestStripDSNPassword(t *testing.T) {
 	tests := []struct {
 		name string

@@ -125,6 +125,30 @@ func TestTUIRunModeCycleIncludesPlan(t *testing.T) {
 	}
 }
 
+func TestTUIDockerStorageCyclesToPortableBundle(t *testing.T) {
+	model := newTUIModel(config{
+		Workers:   2,
+		BatchSize: 5000,
+		Docker:    dockerTargetConfig{Enabled: true, Persistent: true},
+	})
+	model.formFocus = formFieldDockerPersistent
+
+	updated, cmd := model.handleFormEnter()
+	if cmd != nil {
+		t.Fatal("storage change returned an unexpected command")
+	}
+	got := updated.(tuiModel)
+	if !got.cfg.Docker.Portable || !got.cfg.Docker.Persistent {
+		t.Fatalf("Docker storage = %#v, want portable", got.cfg.Docker)
+	}
+	if !got.isFormFieldVisible(formFieldDockerBundleDir) {
+		t.Fatal("portable bundle directory should be visible")
+	}
+	if !strings.Contains(stripANSI(got.formView()), "Storage: portable bundle") {
+		t.Fatal("form does not show portable bundle storage")
+	}
+}
+
 func TestStartActionKeepsTUIRunningAndRecordsLogFile(t *testing.T) {
 	tmp := t.TempDir()
 	oldRun := runTUIExecution

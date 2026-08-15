@@ -62,6 +62,7 @@ const (
 	formFieldTargetTrustCert
 	formFieldTargetOptions
 	formFieldDockerDir
+	formFieldDockerBundleDir
 	formFieldDockerPort
 	formFieldDockerPersistent
 	formFieldDockerPassword
@@ -86,22 +87,23 @@ const (
 )
 
 type tuiFormState struct {
-	Source         sqlServerDSNForm
-	Target         sqlServerDSNForm
-	RunMode        tuiRunMode
-	DockerDir      string
-	DockerPort     string
-	Workers        string
-	BatchSize      string
-	IncludeSchemas string
-	ExcludeSchemas string
-	IncludeTables  string
-	ExcludeTables  string
-	ExportDDLPath  string
-	ExportDataPath string
-	ExportDataRows string
-	ReportPath     string
-	ExportPath     string
+	Source          sqlServerDSNForm
+	Target          sqlServerDSNForm
+	RunMode         tuiRunMode
+	DockerDir       string
+	DockerBundleDir string
+	DockerPort      string
+	Workers         string
+	BatchSize       string
+	IncludeSchemas  string
+	ExcludeSchemas  string
+	IncludeTables   string
+	ExcludeTables   string
+	ExportDDLPath   string
+	ExportDataPath  string
+	ExportDataRows  string
+	ReportPath      string
+	ExportPath      string
 }
 
 type tuiFakeDataEntry struct {
@@ -196,7 +198,7 @@ var formTextFields = []int{
 	formFieldTargetServer, formFieldTargetPort, formFieldTargetDatabase,
 	formFieldTargetUser, formFieldTargetPassword, formFieldTargetEncrypt,
 	formFieldTargetTrustCert, formFieldTargetOptions,
-	formFieldDockerDir, formFieldDockerPort,
+	formFieldDockerDir, formFieldDockerBundleDir, formFieldDockerPort,
 	formFieldWorkers, formFieldBatchSize,
 	formFieldIncludeSchemas, formFieldExcludeSchemas,
 	formFieldIncludeTables, formFieldExcludeTables,
@@ -215,22 +217,23 @@ func newTUIModel(cfg config) tuiModel {
 	}
 
 	form := tuiFormState{
-		Source:         parseSQLServerDSNForm(cfg.SourceDSN),
-		Target:         parseSQLServerDSNForm(cfg.TargetDSN),
-		RunMode:        initialTUIRunMode(cfg),
-		DockerDir:      cfg.Docker.ComposeDir,
-		DockerPort:     dockerPortStr,
-		Workers:        strconv.Itoa(max(1, cfg.Workers)),
-		BatchSize:      strconv.Itoa(max(1, cfg.BatchSize)),
-		IncludeSchemas: strings.Join(cfg.IncludeSchemas, ","),
-		ExcludeSchemas: strings.Join(cfg.ExcludeSchemas, ","),
-		IncludeTables:  strings.Join(cfg.IncludeTables, ","),
-		ExcludeTables:  strings.Join(cfg.ExcludeTables, ","),
-		ExportDDLPath:  strings.TrimSpace(cfg.ExportDDLFile),
-		ExportDataPath: strings.TrimSpace(cfg.ExportDataFile),
-		ExportDataRows: strconv.Itoa(max(0, cfg.ExportDataRows)),
-		ReportPath:     strings.TrimSpace(cfg.ReportMDFile),
-		ExportPath:     exportPath,
+		Source:          parseSQLServerDSNForm(cfg.SourceDSN),
+		Target:          parseSQLServerDSNForm(cfg.TargetDSN),
+		RunMode:         initialTUIRunMode(cfg),
+		DockerDir:       cfg.Docker.ComposeDir,
+		DockerBundleDir: cfg.Docker.BundleDir,
+		DockerPort:      dockerPortStr,
+		Workers:         strconv.Itoa(max(1, cfg.Workers)),
+		BatchSize:       strconv.Itoa(max(1, cfg.BatchSize)),
+		IncludeSchemas:  strings.Join(cfg.IncludeSchemas, ","),
+		ExcludeSchemas:  strings.Join(cfg.ExcludeSchemas, ","),
+		IncludeTables:   strings.Join(cfg.IncludeTables, ","),
+		ExcludeTables:   strings.Join(cfg.ExcludeTables, ","),
+		ExportDDLPath:   strings.TrimSpace(cfg.ExportDDLFile),
+		ExportDataPath:  strings.TrimSpace(cfg.ExportDataFile),
+		ExportDataRows:  strconv.Itoa(max(0, cfg.ExportDataRows)),
+		ReportPath:      strings.TrimSpace(cfg.ReportMDFile),
+		ExportPath:      exportPath,
 	}
 
 	// Initialize Bubbles v2 text inputs for all text-capable form fields.
@@ -284,6 +287,8 @@ func newTUIModel(cfg config) tuiModel {
 
 	formInputs[formFieldDockerDir].Placeholder = defaultDockerDir
 	formInputs[formFieldDockerDir].SetValue(form.DockerDir)
+	formInputs[formFieldDockerBundleDir].Placeholder = defaultDockerBundleDir
+	formInputs[formFieldDockerBundleDir].SetValue(form.DockerBundleDir)
 	formInputs[formFieldDockerPort].Placeholder = strconv.Itoa(defaultDockerPort)
 	formInputs[formFieldDockerPort].SetValue(form.DockerPort)
 	formInputs[formFieldWorkers].Placeholder = "4"
@@ -588,7 +593,10 @@ func (m tuiModel) formView() string {
 		}
 		b.WriteString(m.formTextRow(formFieldDockerDir, "Compose dir"))
 		b.WriteString(m.formTextRow(formFieldDockerPort, "Docker port"))
-		b.WriteString(m.formBoolRow(formFieldDockerPersistent, "Persistent", m.cfg.Docker.Persistent))
+		b.WriteString(m.formActionRow(formFieldDockerPersistent, "Storage: "+m.cfg.Docker.storageLabel()+" (enter to change)"))
+		if m.cfg.Docker.Portable {
+			b.WriteString(m.formTextRow(formFieldDockerBundleDir, "Portable bundle dir"))
+		}
 		b.WriteString(m.formActionRow(formFieldDockerPassword, "SA password: "+saPasswordDisplay+" (enter to regenerate)"))
 	} else if m.isFormFieldVisible(formFieldTargetServer) {
 		b.WriteString(m.formTextRow(formFieldTargetServer, "Target server"))
@@ -814,7 +822,7 @@ func (m tuiModel) configLinesEstimate() int {
 		formFieldTargetServer, formFieldTargetPort, formFieldTargetDatabase,
 		formFieldTargetUser, formFieldTargetPassword, formFieldTargetEncrypt,
 		formFieldTargetTrustCert, formFieldTargetOptions,
-		formFieldDockerDir, formFieldDockerPort, formFieldDockerPersistent, formFieldDockerPassword,
+		formFieldDockerDir, formFieldDockerBundleDir, formFieldDockerPort, formFieldDockerPersistent, formFieldDockerPassword,
 		formFieldWorkers, formFieldBatchSize, formFieldVerbose,
 		formFieldDropExisting, formFieldEnableFakeData,
 		formFieldIncludeSchemas, formFieldExcludeSchemas,
@@ -1000,6 +1008,8 @@ func (m tuiModel) isFormFieldVisible(field int) bool {
 		return runMode.showsTargetSettings() && !m.cfg.Docker.Enabled
 	case formFieldDockerDir, formFieldDockerPort, formFieldDockerPersistent, formFieldDockerPassword:
 		return runMode.showsTargetSettings() && m.cfg.Docker.Enabled
+	case formFieldDockerBundleDir:
+		return runMode.showsTargetSettings() && m.cfg.Docker.Enabled && m.cfg.Docker.Portable
 	case formFieldWorkers, formFieldBatchSize, formFieldVerbose, formFieldReportPath:
 		return runMode.showsCopyExecutionSettings()
 	case formFieldDropExisting:
@@ -1058,7 +1068,7 @@ func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
 			}
 		}
 	case formFieldDockerPersistent:
-		m.cfg.Docker.Persistent = !m.cfg.Docker.Persistent
+		m.cfg.Docker.cycleStorage()
 	case formFieldDockerPassword:
 		pw, err := randomSAPassword()
 		if err != nil {
@@ -1155,6 +1165,7 @@ func (m *tuiModel) syncFormToInputs() {
 	m.formInputs[formFieldTargetTrustCert].SetValue(m.form.Target.TrustServerCertificate)
 	m.formInputs[formFieldTargetOptions].SetValue(m.form.Target.Options)
 	m.formInputs[formFieldDockerDir].SetValue(m.form.DockerDir)
+	m.formInputs[formFieldDockerBundleDir].SetValue(m.form.DockerBundleDir)
 	m.formInputs[formFieldDockerPort].SetValue(m.form.DockerPort)
 	m.formInputs[formFieldWorkers].SetValue(m.form.Workers)
 	m.formInputs[formFieldBatchSize].SetValue(m.form.BatchSize)
@@ -1188,6 +1199,7 @@ func (m *tuiModel) syncInputsToForm() {
 	m.form.Target.TrustServerCertificate = m.formInputs[formFieldTargetTrustCert].Value()
 	m.form.Target.Options = m.formInputs[formFieldTargetOptions].Value()
 	m.form.DockerDir = m.formInputs[formFieldDockerDir].Value()
+	m.form.DockerBundleDir = m.formInputs[formFieldDockerBundleDir].Value()
 	m.form.DockerPort = m.formInputs[formFieldDockerPort].Value()
 	m.form.Workers = m.formInputs[formFieldWorkers].Value()
 	m.form.BatchSize = m.formInputs[formFieldBatchSize].Value()
@@ -1294,6 +1306,7 @@ func (m tuiModel) configFromForm(requireSource bool, requireTarget bool) (config
 	if cfg.Docker.Enabled {
 		cfg.TargetDSN = ""
 		cfg.Docker.ComposeDir = strings.TrimSpace(m.form.DockerDir)
+		cfg.Docker.BundleDir = strings.TrimSpace(m.form.DockerBundleDir)
 		dockerPort, portErr := parsePositiveIntField(m.form.DockerPort, defaultDockerPort)
 		if portErr != nil {
 			return config{}, fmt.Errorf("docker port: %w", portErr)

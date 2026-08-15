@@ -77,6 +77,34 @@ func TestDockerTargetDSNRequiresSourceDatabase(t *testing.T) {
 	}
 }
 
+func TestPortableDockerConfigUsesNamedVolume(t *testing.T) {
+	portable := true
+	cfg := normalizeDockerConfig(&yamlDockerConfig{Portable: &portable})
+	if !cfg.Portable || !cfg.Persistent || !cfg.usesNamedVolume() {
+		t.Fatalf("portable config = %#v, want portable persistent storage", cfg)
+	}
+
+	compose := buildDockerCompose(cfg)
+	service := compose.Services[portableServiceName]
+	if len(service.Volumes) != 1 || service.Volumes[0] != "mssql_data:/var/opt/mssql" {
+		t.Fatalf("portable service volumes = %#v", service.Volumes)
+	}
+	if _, ok := compose.Volumes["mssql_data"]; !ok {
+		t.Fatalf("portable Compose volumes = %#v", compose.Volumes)
+	}
+}
+
+func TestDockerStorageCycle(t *testing.T) {
+	var cfg dockerTargetConfig
+	want := []string{"local volume", "portable bundle", "temporary"}
+	for _, label := range want {
+		cfg.cycleStorage()
+		if got := cfg.storageLabel(); got != label {
+			t.Fatalf("storage label = %q, want %q", got, label)
+		}
+	}
+}
+
 func writeFile(path string, content []byte) error {
 	return os.WriteFile(path, content, 0o600)
 }

@@ -18,17 +18,47 @@ import (
 )
 
 const (
-	mssqlDockerImage  = "mcr.microsoft.com/mssql/server:2022-latest"
-	defaultDockerPort = 1433
-	defaultDockerDir  = "docker"
+	mssqlDockerImage       = "mcr.microsoft.com/mssql/server:2022-latest"
+	defaultDockerPort      = 1433
+	defaultDockerDir       = "docker"
+	defaultDockerBundleDir = "docker-bundle"
 )
 
 type dockerTargetConfig struct {
 	Enabled    bool
 	Persistent bool
+	Portable   bool
 	ComposeDir string
+	BundleDir  string
 	Port       int
 	SAPassword string
+}
+
+func (cfg dockerTargetConfig) usesNamedVolume() bool {
+	return cfg.Persistent || cfg.Portable
+}
+
+func (cfg dockerTargetConfig) storageLabel() string {
+	switch {
+	case cfg.Portable:
+		return "portable bundle"
+	case cfg.Persistent:
+		return "local volume"
+	default:
+		return "temporary"
+	}
+}
+
+func (cfg *dockerTargetConfig) cycleStorage() {
+	switch {
+	case cfg.Portable:
+		cfg.Portable = false
+		cfg.Persistent = false
+	case cfg.Persistent:
+		cfg.Portable = true
+	default:
+		cfg.Persistent = true
+	}
 }
 
 func (cfg *dockerTargetConfig) ensurePassword() error {
@@ -45,7 +75,9 @@ func (cfg *dockerTargetConfig) ensurePassword() error {
 
 type yamlDockerConfig struct {
 	Persistent *bool  `yaml:"persistent"`
+	Portable   *bool  `yaml:"portable"`
 	ComposeDir string `yaml:"compose-dir"`
+	BundleDir  string `yaml:"bundle-dir"`
 	Port       *int   `yaml:"port"`
 	SAPassword string `yaml:"sa-password"`
 }
@@ -57,6 +89,7 @@ func normalizeDockerConfig(yamlCfg *yamlDockerConfig) dockerTargetConfig {
 	cfg := dockerTargetConfig{
 		Enabled:    true,
 		ComposeDir: strings.TrimSpace(yamlCfg.ComposeDir),
+		BundleDir:  strings.TrimSpace(yamlCfg.BundleDir),
 		SAPassword: strings.TrimSpace(yamlCfg.SAPassword),
 	}
 	if yamlCfg.Persistent != nil {
@@ -64,6 +97,12 @@ func normalizeDockerConfig(yamlCfg *yamlDockerConfig) dockerTargetConfig {
 	}
 	if yamlCfg.Port != nil {
 		cfg.Port = *yamlCfg.Port
+	}
+	if yamlCfg.Portable != nil {
+		cfg.Portable = *yamlCfg.Portable
+	}
+	if cfg.Portable {
+		cfg.Persistent = true
 	}
 	return cfg
 }
@@ -96,7 +135,7 @@ func buildDockerCompose(cfg dockerTargetConfig) dockerComposeFile {
 	compose := dockerComposeFile{
 		Services: map[string]dockerComposeService{"mssql": service},
 	}
-	if cfg.Persistent {
+	if cfg.usesNamedVolume() {
 		service.Volumes = []string{"mssql_data:/var/opt/mssql"}
 		compose.Services["mssql"] = service
 		compose.Volumes = map[string]any{"mssql_data": nil}
@@ -142,7 +181,7 @@ func existingDockerComposeSAPassword(composePath string) (string, bool, error) {
 }
 
 func reconcileDockerTargetConfig(cfg dockerTargetConfig) (dockerTargetConfig, error) {
-	if !cfg.Persistent {
+	if !cfg.usesNamedVolume() {
 		return cfg, nil
 	}
 	composePath := dockerComposePath(cfg.ComposeDir)
@@ -203,7 +242,7 @@ func setupDockerTarget(cfg dockerTargetConfig) (string, error) {
 		return "", err
 	}
 	log.Printf("docker: wrote %s", composePath)
-	log.Printf("docker: starting SQL Server container (port %d, persistent=%v)...", resolvedCfg.Port, resolvedCfg.Persistent)
+	log.Printf("docker: starting SQL Server container (port %d, storage=%s)...", resolvedCfg.Port, resolvedCfg.storageLabel())
 	if err := runDockerComposeUp(composePath); err != nil {
 		return "", err
 	}

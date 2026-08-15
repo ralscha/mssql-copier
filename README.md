@@ -22,6 +22,7 @@ A fast, concurrent SQL Server copier that replicates SQL Server tables, alias us
 - **Markdown copy report** - writes a post-run markdown summary with per-table copied row counts and run highlights
 - **Drop-existing mode** - optionally drop matching target tables before recreating them
 - **Fake data replacement** - replace configured column values during copy and data export using `gofakeit`
+- **Portable Docker bundles** - snapshot a copied Docker database into a checksum-verified folder that can be moved to another computer and restored there
 - **Terminal UI** - interactive Bubble Tea mode for entering source/target settings, include/exclude filters, exporting YAML config, and editing exact per-column fake-data rules
 - **Post-data objects** - creates primary keys, checks, foreign keys, and indexes after data is loaded
 - **Integration tested** - includes testcontainers-based integration tests
@@ -47,6 +48,37 @@ When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 su
 If the target DSN names a database that does not exist yet, the copier first connects to `master` on that same SQL Server instance and creates the database automatically before it opens the target connection.
 
 Docker targets preserve the source database name. For example, copying from a source database named `testdb` creates and populates `testdb` in the Docker SQL Server instance. Copy mode rejects missing target database names and SQL Server system databases (`master`, `model`, `msdb`, and `tempdb`) as targets.
+
+### Docker storage and portable bundles
+
+For a Docker target, the TUI's `Storage` field cycles through three choices:
+
+- `temporary` keeps the SQL Server files only in the container
+- `local volume` uses the existing persistent named-volume workflow on this computer
+- `portable bundle` uses a named volume while copying, then stops SQL Server briefly and creates a movable bundle folder
+
+Portable mode follows the same archive format as the `shv-db-bundle` reference program. The output folder contains `docker-compose.yml`, `mssql_data.tar.gz`, `manifest.json` with a SHA-256 checksum, `README.txt`, and the current `mssql-copier` executable. The bundle directory must be missing or empty; an existing bundle is never overwritten.
+
+Copy the entire folder to the destination computer, start Docker Desktop, open a terminal in that folder, and run:
+
+```sh
+./mssql-copier restore
+```
+
+On Windows PowerShell, run `./mssql-copier.exe restore`. Restore verifies the checksum, creates the Compose service and named volume, extracts the SQL Server files, and starts the service. It refuses to replace a non-empty destination volume unless you explicitly run `restore --force`. Use `restore --no-start` to leave the service stopped.
+
+The same mode can be saved in YAML:
+
+```yaml
+docker:
+  persistent: true
+  portable: true
+  compose-dir: ./docker-work
+  bundle-dir: ./database-bundle
+  port: 1433
+```
+
+The Compose file necessarily contains the generated SQL Server administrator password, so transfer and store the portable folder securely.
 
 The form supports four run modes: `copy`, `plan`, `ddl`, and `ddl+data`. When target type is `local`, the TUI only accepts loopback target addresses such as `localhost`, `127.0.0.1`, or `::1`.
 
@@ -316,6 +348,9 @@ task test
 
 # Run integration tests (requires Docker)
 task test:integration
+
+# Run the portable bundle/restore integration test (requires Docker)
+task test:portable
 ```
 
 Integration tests use [testcontainers-go](https://github.com/testcontainers/testcontainers-go) to spin up real SQL Server instances in Docker.

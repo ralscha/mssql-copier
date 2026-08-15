@@ -32,7 +32,9 @@ type persistedYAMLConfig struct {
 
 type persistedDockerConfig struct {
 	Persistent bool   `yaml:"persistent,omitempty"`
+	Portable   bool   `yaml:"portable,omitempty"`
 	ComposeDir string `yaml:"compose-dir,omitempty"`
+	BundleDir  string `yaml:"bundle-dir,omitempty"`
 	Port       int    `yaml:"port,omitempty"`
 }
 
@@ -80,7 +82,9 @@ func persistedDockerConfigFrom(cfg dockerTargetConfig) *persistedDockerConfig {
 	}
 	return &persistedDockerConfig{
 		Persistent: cfg.Persistent,
+		Portable:   cfg.Portable,
 		ComposeDir: cfg.ComposeDir,
+		BundleDir:  cfg.BundleDir,
 		Port:       cfg.Port,
 	}
 }

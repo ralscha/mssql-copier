@@ -104,6 +104,9 @@ func Main() {
 }
 
 func runMain() error {
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		return runPortableRestoreCLI(context.Background(), os.Args[2:], os.Stdout, os.Stderr)
+	}
 	return runTUI(parseFlags())
 }
 
@@ -112,6 +115,11 @@ func executeConfig(cfg config) error {
 		return err
 	}
 	if cfg.Docker.Enabled {
+		if cfg.Docker.Portable {
+			if err := validatePortableBundleDestination(cfg.Docker); err != nil {
+				return fmt.Errorf("prepare portable Docker bundle: %w", err)
+			}
+		}
 		if err := cfg.Docker.ensurePassword(); err != nil {
 			return fmt.Errorf("generate docker SA password: %w", err)
 		}
@@ -168,6 +176,12 @@ func executeConfig(cfg config) error {
 
 	if err := c.run(ctx); err != nil {
 		return fmt.Errorf("copy failed: %w", err)
+	}
+	if cfg.Docker.Enabled && cfg.Docker.Portable {
+		databaseName := sqlServerDSNDatabaseName(cfg.SourceDSN)
+		if err := createPortableDockerBundle(ctx, cfg.Docker, databaseName); err != nil {
+			return fmt.Errorf("create portable Docker bundle: %w", err)
+		}
 	}
 
 	return nil

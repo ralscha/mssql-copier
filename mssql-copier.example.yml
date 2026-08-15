@@ -44,3 +44,13 @@ exclude-tables:
 #   model: gpt-4o-mini
 #   api-key-env: OPENAI_API_KEY
 #   base-url: https://api.openai.com/v1
+
+# Optional Docker target. In the TUI, Storage cycles between temporary,
+# local volume, and portable bundle. Portable mode creates a folder that can
+# be copied to another computer and restored with `mssql-copier restore`.
+# docker:
+#   persistent: true
+#   portable: true
+#   compose-dir: ./docker-work
+#   bundle-dir: ./database-bundle
+#   port: 1433

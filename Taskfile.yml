@@ -44,6 +44,13 @@ tasks:
     env:
       COPY_MSSQL_RUN_INTEGRATION: '1'
 
+  test:portable:
+    desc: Run the end-to-end portable Docker bundle and restore test
+    cmds:
+      - go test -v -run ^TestPortableDockerBundleIntegration$ -count=1 -timeout 15m ./internal/copier
+    env:
+      COPY_MSSQL_RUN_PORTABLE_INTEGRATION: '1'
+
   plan:
     desc: Launch the app with a config that preselects plan mode in the TUI
     deps: [build]
