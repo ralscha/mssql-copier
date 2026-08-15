@@ -151,7 +151,7 @@ func TestPortableDockerBundleIntegration(t *testing.T) {
 		t.Fatal("copy target was not restarted after the portable snapshot")
 	}
 
-	if err := runner.run(ctx, "docker", portableComposeArgs(dockerComposePath(composeDir), "down")...); err != nil {
+	if err := runner.runDocker(ctx, portableComposeArgs(dockerComposePath(composeDir), "down")...); err != nil {
 		t.Fatalf("stop original copy target before isolated restore: %v", err)
 	}
 	restoreOutput, restoreErr := runBundledRestore(ctx, bundledExecutable, bundleDir)
@@ -273,7 +273,8 @@ func availableTCPPort(t *testing.T) int {
 }
 
 func runBundledRestore(ctx context.Context, executable, bundleDir string, extraArgs ...string) (string, error) {
-	args := []string{"restore", "--bundle", bundleDir}
+	args := make([]string, 0, 3+len(extraArgs))
+	args = append(args, "restore", "--bundle", bundleDir)
 	args = append(args, extraArgs...)
 	// #nosec G204 -- executable is a test-built mssql-copier path and arguments are passed without a shell.
 	cmd := exec.CommandContext(ctx, executable, args...)
@@ -288,7 +289,7 @@ func cleanupPortableIntegrationProject(t *testing.T, runner *portableRunner, com
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := runner.run(ctx, "docker", portableComposeArgs(composeFile, "down", "--volumes", "--remove-orphans")...); err != nil {
+	if err := runner.runDocker(ctx, portableComposeArgs(composeFile, "down", "--volumes", "--remove-orphans")...); err != nil {
 		t.Errorf("clean up portable integration project %q: %v", composeFile, err)
 	}
 }

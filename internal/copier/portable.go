@@ -132,7 +132,7 @@ func createPortableDockerBundle(ctx context.Context, cfg dockerTargetConfig, dat
 		return err
 	}
 	if !info.State.Running {
-		return fmt.Errorf("Compose service %q must be running before it can be bundled", portableServiceName)
+		return fmt.Errorf("compose service %q must be running before it can be bundled", portableServiceName)
 	}
 	volumeName, err := namedVolumeAt(info, portableContainerPath)
 	if err != nil {
@@ -176,7 +176,7 @@ func createPortableDockerBundle(ctx context.Context, cfg dockerTargetConfig, dat
 	}
 
 	log.Printf("docker: stopping service %q for a consistent portable snapshot...", portableServiceName)
-	if err := runner.run(ctx, "docker", portableComposeArgs(composeFile, "stop", portableServiceName)...); err != nil {
+	if err := runner.runDocker(ctx, portableComposeArgs(composeFile, "stop", portableServiceName)...); err != nil {
 		return err
 	}
 	stopped := true
@@ -187,7 +187,7 @@ func createPortableDockerBundle(ctx context.Context, cfg dockerTargetConfig, dat
 		restartCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		log.Printf("docker: restarting service %q after portable snapshot...", portableServiceName)
-		if err := runner.run(restartCtx, "docker", portableComposeArgs(composeFile, "start", portableServiceName)...); err != nil {
+		if err := runner.runDocker(restartCtx, portableComposeArgs(composeFile, "start", portableServiceName)...); err != nil {
 			log.Printf("docker: warning: could not restart service %q: %v", portableServiceName, err)
 		}
 	}()
@@ -199,7 +199,7 @@ func createPortableDockerBundle(ctx context.Context, cfg dockerTargetConfig, dat
 		"--mount", "type=bind,source=" + staging + ",target=/backup",
 		portableHelperImage, "sh", "-c", "cd /volume && tar czf /backup/" + portableArchiveName + " .",
 	}
-	if err := runner.run(ctx, "docker", archiveArgs...); err != nil {
+	if err := runner.runDocker(ctx, archiveArgs...); err != nil {
 		return fmt.Errorf("archive Docker volume: %w", err)
 	}
 
@@ -251,7 +251,9 @@ func runPortableRestoreCLI(ctx context.Context, args []string, stdout, stderr io
 	force := fs.Bool("force", false, "erase a non-empty destination volume before restoring")
 	noStart := fs.Bool("no-start", false, "leave the restored service stopped")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: mssql-copier restore [options]\n\n")
+		if _, err := fmt.Fprintln(fs.Output(), "Usage: mssql-copier restore [options]"); err != nil {
+			return
+		}
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -293,7 +295,9 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 		return errors.New("manifest does not contain an archive checksum")
 	}
 
-	fmt.Fprintln(runner.stdout, "Verifying portable bundle checksum...")
+	if err := writePortableOutput(runner.stdout, "Verifying portable bundle checksum...\n"); err != nil {
+		return err
+	}
 	checksum, err := portableFileSHA256(archiveFile)
 	if err != nil {
 		return err
@@ -320,8 +324,10 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 		return err
 	}
 
-	fmt.Fprintf(runner.stdout, "Creating destination service %q without starting it...\n", service)
-	if err := runner.run(ctx, "docker", portableComposeArgs(composeFile, "create", service)...); err != nil {
+	if err := writePortableOutput(runner.stdout, "Creating destination service %q without starting it...\n", service); err != nil {
+		return err
+	}
+	if err := runner.runDocker(ctx, portableComposeArgs(composeFile, "create", service)...); err != nil {
 		return err
 	}
 	containerID, err := portableComposeContainerID(ctx, runner, composeFile, service)
@@ -339,8 +345,10 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 
 	wasRunning := info.State.Running
 	if wasRunning {
-		fmt.Fprintf(runner.stdout, "Stopping Compose service %q...\n", service)
-		if err := runner.run(ctx, "docker", portableComposeArgs(composeFile, "stop", service)...); err != nil {
+		if err := writePortableOutput(runner.stdout, "Stopping Compose service %q...\n", service); err != nil {
+			return err
+		}
+		if err := runner.runDocker(ctx, portableComposeArgs(composeFile, "stop", service)...); err != nil {
 			return err
 		}
 	}
@@ -351,9 +359,13 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 		}
 		restartCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		fmt.Fprintf(runner.stdout, "Restore failed; restarting service %q...\n", service)
-		if err := runner.run(restartCtx, "docker", portableComposeArgs(composeFile, "start", service)...); err != nil {
-			fmt.Fprintf(runner.stderr, "Warning: could not restart service %q: %v\n", service, err)
+		if err := writePortableOutput(runner.stdout, "Restore failed; restarting service %q...\n", service); err != nil {
+			log.Printf("restore: could not write restart status: %v", err)
+		}
+		if err := runner.runDocker(restartCtx, portableComposeArgs(composeFile, "start", service)...); err != nil {
+			if writeErr := writePortableOutput(runner.stderr, "Warning: could not restart service %q: %v\n", service, err); writeErr != nil {
+				log.Printf("restore: could not write restart warning: %v", writeErr)
+			}
 		}
 	}()
 
@@ -365,7 +377,9 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 		return fmt.Errorf("destination volume %q is not empty; use --force to erase and replace it", volumeName)
 	}
 
-	fmt.Fprintf(runner.stdout, "Restoring portable database into Docker volume %q...\n", volumeName)
+	if err := writePortableOutput(runner.stdout, "Restoring portable database into Docker volume %q...\n", volumeName); err != nil {
+		return err
+	}
 	restoreScript := "cd /volume && tar xzf /backup/" + portableArchiveName
 	if force {
 		restoreScript = "find /volume -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && " + restoreScript
@@ -376,46 +390,47 @@ func restorePortableDockerBundle(ctx context.Context, bundleDir, serviceOverride
 		"--mount", "type=bind,source=" + bundleDir + ",target=/backup,readonly",
 		helperImage, "sh", "-c", restoreScript,
 	}
-	if err := runner.run(ctx, "docker", restoreArgs...); err != nil {
+	if err := runner.runDocker(ctx, restoreArgs...); err != nil {
 		return fmt.Errorf("restore Docker volume: %w", err)
 	}
 
 	if noStart {
 		restoreFinished = true
-		fmt.Fprintf(runner.stdout, "Restore complete. Service %q was left stopped.\n", service)
-		return nil
+		return writePortableOutput(runner.stdout, "Restore complete. Service %q was left stopped.\n", service)
 	}
-	fmt.Fprintf(runner.stdout, "Starting restored service %q...\n", service)
-	if err := runner.run(ctx, "docker", portableComposeArgs(composeFile, "up", "-d", service)...); err != nil {
+	if err := writePortableOutput(runner.stdout, "Starting restored service %q...\n", service); err != nil {
+		return err
+	}
+	if err := runner.runDocker(ctx, portableComposeArgs(composeFile, "up", "-d", service)...); err != nil {
 		return err
 	}
 	restoreFinished = true
-	fmt.Fprintln(runner.stdout, "Restore complete.")
-	return nil
+	return writePortableOutput(runner.stdout, "Restore complete.\n")
 }
 
 func portableComposeArgs(composeFile string, args ...string) []string {
-	base := []string{"compose", "--project-directory", filepath.Dir(composeFile), "-f", composeFile}
+	base := make([]string, 0, 5+len(args))
+	base = append(base, "compose", "--project-directory", filepath.Dir(composeFile), "-f", composeFile)
 	return append(base, args...)
 }
 
 func portableComposeContainerID(ctx context.Context, runner *portableRunner, composeFile, service string) (string, error) {
-	output, err := runner.capture(ctx, "docker", portableComposeArgs(composeFile, "ps", "-aq", service)...)
+	output, err := runner.captureDocker(ctx, portableComposeArgs(composeFile, "ps", "-aq", service)...)
 	if err != nil {
 		return "", err
 	}
 	ids := strings.Fields(output)
 	if len(ids) == 0 {
-		return "", fmt.Errorf("Compose service %q has no container", service)
+		return "", fmt.Errorf("compose service %q has no container", service)
 	}
 	if len(ids) > 1 {
-		return "", fmt.Errorf("Compose service %q has %d containers; expected exactly one", service, len(ids))
+		return "", fmt.Errorf("compose service %q has %d containers; expected exactly one", service, len(ids))
 	}
 	return ids[0], nil
 }
 
 func inspectDockerContainer(ctx context.Context, runner *portableRunner, containerID string) (dockerContainerInfo, error) {
-	output, err := runner.capture(ctx, "docker", "inspect", containerID)
+	output, err := runner.captureDocker(ctx, "inspect", containerID)
 	if err != nil {
 		return dockerContainerInfo{}, err
 	}
@@ -424,7 +439,7 @@ func inspectDockerContainer(ctx context.Context, runner *portableRunner, contain
 		return dockerContainerInfo{}, fmt.Errorf("decode Docker inspect output: %w", err)
 	}
 	if len(result) != 1 {
-		return dockerContainerInfo{}, fmt.Errorf("Docker inspect returned %d containers; expected one", len(result))
+		return dockerContainerInfo{}, fmt.Errorf("docker inspect returned %d containers; expected one", len(result))
 	}
 	return result[0], nil
 }
@@ -444,11 +459,13 @@ func namedVolumeAt(info dockerContainerInfo, containerPath string) (string, erro
 }
 
 func ensureHelperImage(ctx context.Context, runner *portableRunner, image string) error {
-	if _, err := runner.capture(ctx, "docker", "image", "inspect", image); err == nil {
+	if _, err := runner.captureDocker(ctx, "image", "inspect", image); err == nil {
 		return nil
 	}
-	fmt.Fprintf(runner.stdout, "Pulling portable bundle helper image %q...\n", image)
-	if err := runner.run(ctx, "docker", "pull", image); err != nil {
+	if err := writePortableOutput(runner.stdout, "Pulling portable bundle helper image %q...\n", image); err != nil {
+		return err
+	}
+	if err := runner.runDocker(ctx, "pull", image); err != nil {
 		return fmt.Errorf("prepare helper image: %w", err)
 	}
 	return nil
@@ -460,7 +477,7 @@ func portableVolumeIsEmpty(ctx context.Context, runner *portableRunner, image, v
 		"--mount", "type=volume,source=" + volumeName + ",target=/volume,readonly",
 		image, "sh", "-c", `if [ -n "$(ls -A /volume 2>/dev/null)" ]; then exit 3; fi`,
 	}
-	err := runner.run(ctx, "docker", args...)
+	err := runner.runDocker(ctx, args...)
 	if err == nil {
 		return true, nil
 	}
@@ -519,7 +536,7 @@ func requireCommand(name string) error {
 }
 
 func portableFileSHA256(name string) (string, error) {
-	// #nosec G304 -- name is an app-generated bundle path or a validated manifest path.
+	// #nosec G304 G703 -- name is an app-generated bundle path or a path validated to stay inside the bundle.
 	file, err := os.Open(name)
 	if err != nil {
 		return "", fmt.Errorf("open %q: %w", name, err)
@@ -607,22 +624,31 @@ func copyPortableFile(source, destination string, forcedMode os.FileMode) error 
 	return nil
 }
 
-func (runner *portableRunner) run(ctx context.Context, name string, args ...string) error {
-	fmt.Fprintln(runner.stdout, "+ "+formatPortableCommand(name, args))
-	// #nosec G204 -- command name is fixed by callers and arguments are passed without a shell.
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout = runner.stdout
-	cmd.Stderr = runner.stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w", formatPortableCommand(name, args), err)
+func writePortableOutput(writer io.Writer, format string, args ...any) error {
+	if _, err := fmt.Fprintf(writer, format, args...); err != nil {
+		return fmt.Errorf("write portable command output: %w", err)
 	}
 	return nil
 }
 
-func (runner *portableRunner) capture(ctx context.Context, name string, args ...string) (string, error) {
-	// #nosec G204 -- command name is fixed by callers and arguments are passed without a shell.
-	cmd := exec.CommandContext(ctx, name, args...)
+func (runner *portableRunner) runDocker(ctx context.Context, args ...string) error {
+	if err := writePortableOutput(runner.stdout, "+ %s\n", formatDockerCommand(args)); err != nil {
+		return err
+	}
+	// #nosec G204 -- the executable is fixed to Docker and arguments are passed directly without a shell.
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdout = runner.stdout
+	cmd.Stderr = runner.stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", formatDockerCommand(args), err)
+	}
+	return nil
+}
+
+func (runner *portableRunner) captureDocker(ctx context.Context, args ...string) (string, error) {
+	// #nosec G204 -- the executable is fixed to Docker and arguments are passed directly without a shell.
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout strings.Builder
 	var stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -630,16 +656,16 @@ func (runner *portableRunner) capture(ctx context.Context, name string, args ...
 	if err := cmd.Run(); err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail != "" {
-			return "", fmt.Errorf("%s: %w: %s", formatPortableCommand(name, args), err, detail)
+			return "", fmt.Errorf("%s: %w: %s", formatDockerCommand(args), err, detail)
 		}
-		return "", fmt.Errorf("%s: %w", formatPortableCommand(name, args), err)
+		return "", fmt.Errorf("%s: %w", formatDockerCommand(args), err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func formatPortableCommand(name string, args []string) string {
+func formatDockerCommand(args []string) string {
 	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, name)
+	parts = append(parts, "docker")
 	for _, arg := range args {
 		if strings.ContainsAny(arg, " \t\n\"'") {
 			parts = append(parts, strconv.Quote(arg))
