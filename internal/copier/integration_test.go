@@ -1238,18 +1238,16 @@ func startSQLServerContainer(ctx context.Context, t *testing.T, name string) (te
 	password := "Your_strong_Passw0rd!"
 	image := sqlTestImage()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Name:         name,
-			Image:        image,
-			ExposedPorts: []string{"1433/tcp"},
-			Env: map[string]string{
-				"ACCEPT_EULA":       "Y",
-				"MSSQL_SA_PASSWORD": password,
-				"MSSQL_PID":         "Developer",
-			},
-			WaitingFor: wait.ForLog("SQL Server is now ready for client connections").WithStartupTimeout(2 * time.Minute),
+		Name:         name,
+		Image:        image,
+		ExposedPorts: []string{"1433/tcp"},
+		Env: map[string]string{
+			"ACCEPT_EULA":       "Y",
+			"MSSQL_SA_PASSWORD": password,
+			"MSSQL_PID":         "Developer",
 		},
-		Started: true,
+		WaitingFor: wait.ForLog("SQL Server is now ready for client connections").WithStartupTimeout(2 * time.Minute),
+		Started:    true,
 	})
 	if err != nil {
 		t.Fatalf("start SQL Server container with image %s: %v", image, err)
