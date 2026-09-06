@@ -539,8 +539,8 @@ func comparableSQLServerName(server string) string {
 		host = "<local>"
 	} else if machineHost, err := os.Hostname(); err == nil {
 		machineHost = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(machineHost), "."))
-		shortMachineHost := strings.SplitN(machineHost, ".", 2)[0]
-		shortHost := strings.SplitN(host, ".", 2)[0]
+		shortMachineHost, _, _ := strings.Cut(machineHost, ".")
+		shortHost, _, _ := strings.Cut(host, ".")
 		if host == machineHost || host == shortMachineHost || shortHost == machineHost {
 			host = "<local>"
 		}
