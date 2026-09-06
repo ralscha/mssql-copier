@@ -24,11 +24,8 @@ type exportRow struct {
 const maxExportQueryParameters = 2000
 
 func (c *copier) writeDataExportFile(ctx context.Context) error {
-	dir := filepath.Dir(c.cfg.ExportDataFile)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return fmt.Errorf("create data export output directory: %w", err)
-		}
+	if err := ensureOutputDirectory(c.cfg.ExportDataFile, "data export output"); err != nil {
+		return err
 	}
 
 	return writeFileAtomically(c.cfg.ExportDataFile, func(writer io.Writer) error {
@@ -111,10 +108,8 @@ func (c *copier) writeDataExportSQL(ctx context.Context, writer io.Writer) error
 	if _, err := io.WriteString(writer, "\n"); err != nil {
 		return fmt.Errorf("write data export separator: %w", err)
 	}
-	for _, table := range tables {
-		if _, err := fmt.Fprintf(writer, "ALTER TABLE %s NOCHECK CONSTRAINT ALL;\n", table.FQTN()); err != nil {
-			return fmt.Errorf("write data export constraint preamble: %w", err)
-		}
+	if err := writeDataExportConstraintPreamble(writer, tables); err != nil {
+		return err
 	}
 
 	for _, table := range tables {
@@ -133,10 +128,53 @@ func (c *copier) writeDataExportSQL(ctx context.Context, writer io.Writer) error
 	if _, err := io.WriteString(writer, "\n"); err != nil {
 		return fmt.Errorf("write data export separator: %w", err)
 	}
+	if err := writeDataExportConstraintEpilogue(writer, tables); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeDataExportConstraintPreamble(writer io.Writer, tables []tableMeta) error {
 	for _, table := range tables {
-		if _, err := fmt.Fprintf(writer, "ALTER TABLE %s WITH CHECK CHECK CONSTRAINT ALL;\n", table.FQTN()); err != nil {
-			return fmt.Errorf("write data export constraint epilogue: %w", err)
+		for _, check := range table.Checks {
+			if _, err := fmt.Fprintf(writer, "ALTER TABLE %s NOCHECK CONSTRAINT %s;\n", table.FQTN(), quoteIdent(check.Name)); err != nil {
+				return fmt.Errorf("write data export constraint preamble: %w", err)
+			}
 		}
+		for _, foreignKey := range table.ForeignKeys {
+			if _, err := fmt.Fprintf(writer, "ALTER TABLE %s NOCHECK CONSTRAINT %s;\n", table.FQTN(), quoteIdent(foreignKey.Name)); err != nil {
+				return fmt.Errorf("write data export constraint preamble: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func writeDataExportConstraintEpilogue(writer io.Writer, tables []tableMeta) error {
+	for _, table := range tables {
+		for _, check := range table.Checks {
+			if err := writeDataExportConstraintState(writer, table, check.Name, check.Trusted, check.Disabled); err != nil {
+				return err
+			}
+		}
+		for _, foreignKey := range table.ForeignKeys {
+			if err := writeDataExportConstraintState(writer, table, foreignKey.Name, foreignKey.Trusted, foreignKey.Disabled); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeDataExportConstraintState(writer io.Writer, table tableMeta, name string, trusted, disabled bool) error {
+	state := "CHECK"
+	if disabled {
+		state = "NOCHECK"
+	} else if trusted {
+		state = "WITH CHECK CHECK"
+	}
+	if _, err := fmt.Fprintf(writer, "ALTER TABLE %s %s CONSTRAINT %s;\n", table.FQTN(), state, quoteIdent(name)); err != nil {
+		return fmt.Errorf("write data export constraint epilogue: %w", err)
 	}
 	return nil
 }
@@ -410,7 +448,16 @@ func sqlLiteral(value any, col columnMeta, columnType *sql.ColumnType) (string, 
 		}
 		return "0", nil
 	case time.Time:
-		return "'" + v.UTC().Format("2006-01-02 15:04:05.9999999") + "'", nil
+		switch strings.ToLower(strings.TrimSpace(col.SystemTypeName)) {
+		case "date":
+			return "'" + v.Format("2006-01-02") + "'", nil
+		case "time":
+			return "'" + v.Format("15:04:05.9999999") + "'", nil
+		case "datetimeoffset":
+			return "'" + v.Format("2006-01-02 15:04:05.9999999 -07:00") + "'", nil
+		default:
+			return "'" + v.UTC().Format("2006-01-02 15:04:05.9999999") + "'", nil
+		}
 	case int:
 		return strconv.Itoa(v), nil
 	case int8:

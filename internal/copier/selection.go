@@ -97,24 +97,23 @@ func (c *copier) resolveObjectDependencies(ctx context.Context, object discovere
 		if err := c.loadTableDetails(ctx, table); err != nil {
 			return nil, fmt.Errorf("load %s metadata: %w", table.FQTN(), err)
 		}
-		var deps []string
+		var typeDeps []string
 		for _, col := range table.Columns {
 			if col.IsUserDefined {
-				deps = appendUniqueDependency(deps, objectKey(col.TypeSchema, col.UserTypeName))
+				typeDeps = appendUniqueDependency(typeDeps, typeObjectKey(col.TypeSchema, col.UserTypeName))
 			}
 		}
-		resolved, err := c.resolveTableExpressionDependencies(ctx, *table, candidates)
+		objectDeps, err := c.resolveTableExpressionDependencies(ctx, *table, candidates)
 		if err != nil {
 			return nil, fmt.Errorf("resolve dependencies for %s: %w", table.FQTN(), err)
 		}
-		deps = appendUniqueDependencies(deps, resolved)
-		table.DependsOn = deps
-		return deps, nil
+		table.DependsOn = objectDeps
+		return appendUniqueDependencies(typeDeps, objectDeps), nil
 	case "table type":
 		var deps []string
 		for _, col := range c.tableTypes[object.index].Columns {
 			if col.IsUserDefined {
-				deps = appendUniqueDependency(deps, objectKey(col.TypeSchema, col.UserTypeName))
+				deps = appendUniqueDependency(deps, typeObjectKey(col.TypeSchema, col.UserTypeName))
 			}
 		}
 		return deps, nil
@@ -136,8 +135,8 @@ func (c *copier) resolveObjectDependencies(ctx context.Context, object discovere
 		if err != nil {
 			return nil, fmt.Errorf("resolve parameter types for %s: %w", item.FQTN(), err)
 		}
-		item.DependsOn = appendUniqueDependencies(deps, parameterDeps)
-		return item.DependsOn, nil
+		item.DependsOn = deps
+		return appendUniqueDependencies(append([]string(nil), deps...), parameterDeps), nil
 	case "procedure":
 		item := &c.procedures[object.index]
 		deps, err := c.resolveProgrammableDependencies(ctx, item.FQTN(), candidates)
@@ -148,8 +147,8 @@ func (c *copier) resolveObjectDependencies(ctx context.Context, object discovere
 		if err != nil {
 			return nil, fmt.Errorf("resolve parameter types for %s: %w", item.FQTN(), err)
 		}
-		item.DependsOn = appendUniqueDependencies(deps, parameterDeps)
-		return item.DependsOn, nil
+		item.DependsOn = deps
+		return appendUniqueDependencies(append([]string(nil), deps...), parameterDeps), nil
 	case "trigger":
 		item := &c.triggers[object.index]
 		deps, err := c.resolveProgrammableDependencies(ctx, item.FQTN(), candidates)
@@ -165,35 +164,38 @@ func (c *copier) resolveObjectDependencies(ctx context.Context, object discovere
 
 func (c *copier) discoveredObjects() map[string]discoveredObject {
 	objects := make(map[string]discoveredObject)
-	add := func(schema, name, kind string, index int) {
+	addObject := func(schema, name, kind string, index int) {
 		objects[objectKey(schema, name)] = discoveredObject{schema: schema, name: name, kind: kind, index: index}
 	}
+	addType := func(schema, name, kind string, index int) {
+		objects[typeObjectKey(schema, name)] = discoveredObject{schema: schema, name: name, kind: kind, index: index}
+	}
 	for i, table := range c.tables {
-		add(table.Schema, table.Name, "table", i)
+		addObject(table.Schema, table.Name, "table", i)
 	}
 	for i, item := range c.aliasTypes {
-		add(item.Schema, item.Name, "alias type", i)
+		addType(item.Schema, item.Name, "alias type", i)
 	}
 	for i, item := range c.tableTypes {
-		add(item.Schema, item.Name, "table type", i)
+		addType(item.Schema, item.Name, "table type", i)
 	}
 	for i, item := range c.sequences {
-		add(item.Schema, item.Name, "sequence", i)
+		addObject(item.Schema, item.Name, "sequence", i)
 	}
 	for i, item := range c.views {
-		add(item.Schema, item.Name, "view", i)
+		addObject(item.Schema, item.Name, "view", i)
 	}
 	for i, item := range c.functions {
-		add(item.Schema, item.Name, "function", i)
+		addObject(item.Schema, item.Name, "function", i)
 	}
 	for i, item := range c.procedures {
-		add(item.Schema, item.Name, "procedure", i)
+		addObject(item.Schema, item.Name, "procedure", i)
 	}
 	for i, item := range c.triggers {
-		add(item.Schema, item.Name, "trigger", i)
+		addObject(item.Schema, item.Name, "trigger", i)
 	}
 	for i, item := range c.synonyms {
-		add(item.Schema, item.Name, "synonym", i)
+		addObject(item.Schema, item.Name, "synonym", i)
 	}
 	return objects
 }
@@ -269,7 +271,7 @@ WHERE p.object_id = OBJECT_ID(@p1)
 		if err := rows.Scan(&schemaName, &typeName); err != nil {
 			return nil, err
 		}
-		key := objectKey(schemaName, typeName)
+		key := typeObjectKey(schemaName, typeName)
 		if _, ok := candidates[key]; ok {
 			dependencies = appendUniqueDependency(dependencies, key)
 		}
@@ -282,6 +284,10 @@ WHERE p.object_id = OBJECT_ID(@p1)
 
 func objectKey(schema, name string) string {
 	return strings.ToLower(quoteIdent(schema) + "." + quoteIdent(name))
+}
+
+func typeObjectKey(schema, name string) string {
+	return "type:" + objectKey(schema, name)
 }
 
 func appendUniqueDependencies(existing []string, values []string) []string {
@@ -302,7 +308,7 @@ func appendUniqueDependency(existing []string, value string) []string {
 func filterAliasTypes(values []aliasTypeMeta, selected map[string]struct{}) []aliasTypeMeta {
 	result := values[:0]
 	for _, value := range values {
-		if _, ok := selected[objectKey(value.Schema, value.Name)]; ok {
+		if _, ok := selected[typeObjectKey(value.Schema, value.Name)]; ok {
 			result = append(result, value)
 		}
 	}
@@ -312,7 +318,7 @@ func filterAliasTypes(values []aliasTypeMeta, selected map[string]struct{}) []al
 func filterTableTypes(values []tableTypeMeta, selected map[string]struct{}) []tableTypeMeta {
 	result := values[:0]
 	for _, value := range values {
-		if _, ok := selected[objectKey(value.Schema, value.Name)]; ok {
+		if _, ok := selected[typeObjectKey(value.Schema, value.Name)]; ok {
 			result = append(result, value)
 		}
 	}

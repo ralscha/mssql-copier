@@ -2,6 +2,7 @@ package copier
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -22,6 +23,23 @@ func TestParseSQLServerDSNFormFromURL(t *testing.T) {
 	}
 }
 
+func TestParseSQLServerDSNFormFromURLQueryCredentials(t *testing.T) {
+	got := parseSQLServerDSNForm("sqlserver://db.example.com?Database=Northwind&User+ID=alice&Password=secret&Encrypt=disable")
+	if got.Database != "Northwind" || got.Username != "alice" || got.Password != "secret" || got.Encrypt != "disable" {
+		t.Fatalf("parsed URL query fields = %#v", got)
+	}
+	if got.Options != "" {
+		t.Fatalf("credential fields leaked into extra options: %q", got.Options)
+	}
+}
+
+func TestParseSQLServerDSNFormFromURLNamedInstance(t *testing.T) {
+	got := parseSQLServerDSNForm("sqlserver://db.example.com/SQLEXPRESS?database=Northwind")
+	if got.Server != `db.example.com\SQLEXPRESS` {
+		t.Fatalf("named-instance server = %q", got.Server)
+	}
+}
+
 func TestBuildSQLServerDSN(t *testing.T) {
 	got, err := buildSQLServerDSN(sqlServerDSNForm{
 		Server:                 "db.example.com",
@@ -39,6 +57,22 @@ func TestBuildSQLServerDSN(t *testing.T) {
 	want := "server=db.example.com;port=1444;database=Northwind;user id=alice;password=secret;encrypt=disable;trustservercertificate=true;app name=mssql-copier;connection timeout=30"
 	if got != want {
 		t.Fatalf("buildSQLServerDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestSQLServerODBCDSNWithComplexPassword(t *testing.T) {
+	dsn := "odbc:server=db.example.com;database=Northwind;user id=alice;password={semi;secret}}value};encrypt=disable"
+	form := parseSQLServerDSNForm(dsn)
+	if form.Server != "db.example.com" || form.Database != "Northwind" || form.Username != "alice" || form.Password != "semi;secret}value" {
+		t.Fatalf("parsed ODBC fields = %#v", form)
+	}
+
+	rebuilt, err := buildSQLServerDSN(form)
+	if err != nil {
+		t.Fatalf("buildSQLServerDSN() error = %v", err)
+	}
+	if rebuilt != dsn {
+		t.Fatalf("buildSQLServerDSN() = %q, want %q", rebuilt, dsn)
 	}
 }
 
@@ -136,6 +170,51 @@ func TestTUIConfigFromFormLoadsCachedFakeDataBySourceDSN(t *testing.T) {
 	}
 	if got := cfg.FakeData["dbo.users.email"]; got != "email" {
 		t.Fatalf("cached fake-data mapping = %#v", cfg.FakeData)
+	}
+}
+
+func TestTUIConfigFromFormPreservesYAMLFakeDataForSameSource(t *testing.T) {
+	tmp := t.TempDir()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(tmp, "bin", "mssql-copier.exe"), nil
+	}
+	defer func() {
+		executablePath = previousExecutablePath
+	}()
+
+	initial := config{
+		SourceDSN: "server=source-host;database=SourceDB;user id=sa;password=pw1",
+		TargetDSN: "server=localhost;database=TargetDB;user id=sa;password=pw2",
+		Workers:   2,
+		BatchSize: 5000,
+		Verbose:   true,
+		FakeData: map[string]string{
+			"dbo.users.email": "Email",
+			"name.*":          "FirstName",
+		},
+		FakeDataUnique: map[string]bool{"dbo.users.email": true},
+	}
+	m := newTUIModel(initial)
+
+	cfg, err := m.configFromForm(true, true)
+	if err != nil {
+		t.Fatalf("configFromForm() error = %v", err)
+	}
+	if !reflect.DeepEqual(cfg.FakeData, initial.FakeData) {
+		t.Fatalf("fake-data mapping = %#v, want YAML mapping %#v", cfg.FakeData, initial.FakeData)
+	}
+	if !cfg.FakeDataUnique["dbo.users.email"] {
+		t.Fatalf("fake-data unique mapping = %#v", cfg.FakeDataUnique)
+	}
+
+	m.form.Source.Server = "another-source"
+	changed, err := m.configFromForm(true, true)
+	if err != nil {
+		t.Fatalf("configFromForm() after source change error = %v", err)
+	}
+	if len(changed.FakeData) != 0 || len(changed.FakeDataUnique) != 0 {
+		t.Fatalf("source-specific fake data leaked to another source: mappings=%#v unique=%#v", changed.FakeData, changed.FakeDataUnique)
 	}
 }
 

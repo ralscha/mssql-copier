@@ -79,6 +79,9 @@ func (c *copier) writeMarkdownReport(runDuration time.Duration) error {
 		return nil
 	}
 	script := c.markdownReport(runDuration)
+	if err := ensureOutputDirectory(c.cfg.ReportMDFile, "report output"); err != nil {
+		return err
+	}
 	if err := os.WriteFile(c.cfg.ReportMDFile, []byte(script), 0o600); err != nil {
 		return fmt.Errorf("write markdown report %s: %w", c.cfg.ReportMDFile, err)
 	}

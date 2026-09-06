@@ -60,7 +60,10 @@ func TestPrintPlanViewsOnly(t *testing.T) {
 	defer log.SetOutput(oldLog)
 
 	c := &copier{
-		cfg: config{SourceDSN: "src", TargetDSN: "dst"},
+		cfg: config{
+			SourceDSN: "sqlserver://reader:source-secret@source.example.com?database=SourceDB",
+			TargetDSN: "server=target.example.com;database=TargetDB;user id=writer;password=target-secret",
+		},
 		views: []viewMeta{{
 			Schema:    "reporting",
 			Name:      "daily_sales",
@@ -84,6 +87,12 @@ func TestPrintPlanViewsOnly(t *testing.T) {
 	}
 	if strings.Contains(got, "No tables matched") {
 		t.Fatalf("unexpected tables-only empty message in views-only plan:\n%s", got)
+	}
+	if strings.Contains(got, "source-secret") || strings.Contains(got, "target-secret") {
+		t.Fatalf("plan output leaked a DSN password:\n%s", got)
+	}
+	if !strings.Contains(got, "sqlserver://reader@source.example.com") || !strings.Contains(got, "user id=writer") {
+		t.Fatalf("plan output did not retain useful redacted connection details:\n%s", got)
 	}
 }
 

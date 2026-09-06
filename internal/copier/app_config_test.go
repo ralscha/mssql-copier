@@ -213,9 +213,19 @@ func TestStripDSNPassword(t *testing.T) {
 			want: "sqlserver://sa@db.example.com?database=MyDB",
 		},
 		{
+			name: "url dsn with query password",
+			dsn:  "sqlserver://db.example.com?database=MyDB&user+id=sa&password=query-secret",
+			want: "sqlserver://db.example.com?database=MyDB&user+id=sa",
+		},
+		{
 			name: "key-value dsn with password",
 			dsn:  "server=db.example.com;user id=sa;password=mypass;database=MyDB",
-			want: "server=db.example.com;database=MyDB;user id=sa",
+			want: "server=db.example.com;user id=sa;database=MyDB",
+		},
+		{
+			name: "odbc dsn with braced password",
+			dsn:  "odbc:server=db.example.com;user id=sa;password={semi;secret}}};database=MyDB",
+			want: "odbc:server=db.example.com;user id=sa;database=MyDB",
 		},
 		{
 			name: "key-value dsn without password",
@@ -313,6 +323,22 @@ func TestSameSourceAndTargetDatabase(t *testing.T) {
 	}
 }
 
+func TestSameSourceAndTargetDatabaseRecognizesLocalAliases(t *testing.T) {
+	database := "SameDB"
+	if !sameSourceAndTargetDatabase(
+		"sqlserver://sa:one@localhost:1433?database="+database,
+		"server=127.0.0.1;port=1433;database="+database+";user id=sa;password=two",
+	) {
+		t.Fatal("loopback aliases should identify the same database")
+	}
+	if !sameSourceAndTargetDatabase(
+		"server=[::1];database="+database,
+		"server=localhost;port=1433;database="+database,
+	) {
+		t.Fatal("IPv6 loopback and localhost should identify the same database")
+	}
+}
+
 func TestConfigValidateSameSourceAndTarget(t *testing.T) {
 	dsn := "sqlserver://sa:pass@db.example.com?database=MyDB"
 	cfg := config{SourceDSN: dsn, TargetDSN: dsn}
@@ -395,14 +421,35 @@ func TestConfigValidateExportDataRows(t *testing.T) {
 		})
 	}
 
-	if err := (config{ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
+	if err := (config{SourceDSN: "source", ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
 		t.Fatalf("expected export-data row limit to validate, got %v", err)
 	}
-	if err := (config{ExportDDLFile: "schema.sql", ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
+	if err := (config{SourceDSN: "source", ExportDDLFile: "schema.sql", ExportDataFile: "seed.sql", ExportDataRows: 10}).validate(); err != nil {
 		t.Fatalf("expected combined ddl+data export to validate, got %v", err)
 	}
-	if err := (config{ReportMDFile: "copy-report.md"}).validate(); err != nil {
+	if err := (config{SourceDSN: "source", TargetDSN: "target", ReportMDFile: "copy-report.md"}).validate(); err != nil {
 		t.Fatalf("expected report markdown config to validate, got %v", err)
+	}
+}
+
+func TestConfigValidateRequiresConnections(t *testing.T) {
+	if err := (config{ExportDDLFile: "schema.sql"}).validate(); err == nil || err.Error() != "source DSN is required" {
+		t.Fatalf("missing source validate() error = %v", err)
+	}
+	if err := (config{SourceDSN: "source"}).validate(); err == nil || err.Error() != "target DSN is required" {
+		t.Fatalf("missing target validate() error = %v", err)
+	}
+}
+
+func TestRunConfigCLIHelp(t *testing.T) {
+	var output bytes.Buffer
+	if err := runConfigCLI([]string{"--help"}, &output); err != nil {
+		t.Fatalf("runConfigCLI(--help) error = %v", err)
+	}
+	for _, want := range []string{"Usage of mssql-copier run:", "--config", "--yes"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("run help does not contain %q:\n%s", want, output.String())
+		}
 	}
 }
 
@@ -524,6 +571,8 @@ func TestIsLocalTargetDSN(t *testing.T) {
 		{name: "server localdb alias", dsn: "server=(localdb)\\MSSQLLocalDB;database=db", want: true},
 		{name: "server equals ipv4 loopback", dsn: "server=127.0.0.1,1433;database=db", want: true},
 		{name: "server equals ipv6 loopback", dsn: "server=[::1]:1433;database=db", want: true},
+		{name: "odbc loopback with complex password", dsn: "odbc:password={semi;secret};server=localhost;database=db", want: true},
+		{name: "named instance URL", dsn: "sqlserver://user:pass@localhost/SQLEXPRESS?database=db", want: true},
 		{name: "remote url", dsn: "sqlserver://user:pass@db.example.com:1433?database=db", want: false},
 		{name: "remote server", dsn: "server=tcp:db.example.com,1433;database=db", want: false},
 		{name: "empty", dsn: "", want: false},

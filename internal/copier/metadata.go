@@ -171,8 +171,6 @@ ORDER BY c.column_id;`
 			return nil, err
 		}
 		col.SystemTypeName = strings.ToLower(col.SystemTypeName)
-		col.UserTypeName = strings.ToLower(col.UserTypeName)
-		col.TypeSchema = strings.ToLower(col.TypeSchema)
 
 		switch {
 		case col.GeneratedAlways != 0:

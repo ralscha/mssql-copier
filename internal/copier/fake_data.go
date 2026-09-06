@@ -330,22 +330,14 @@ func (f *dataFaker) matchRule(table tableMeta, col columnMeta) (fakeDataRule, bo
 }
 
 func columnHasUniqueConstraint(table tableMeta, col columnMeta) bool {
-	// Check primary key
-	if table.PrimaryKey != nil {
-		for _, keycol := range table.PrimaryKey.Columns {
-			if keycol.Name == col.Name {
-				return true
-			}
-		}
+	// A column in a composite key is not individually unique. Callers may still
+	// request per-column uniqueness explicitly through fake-data-unique.
+	if table.PrimaryKey != nil && len(table.PrimaryKey.Columns) == 1 && strings.EqualFold(table.PrimaryKey.Columns[0].Name, col.Name) {
+		return true
 	}
-	// Check unique indexes
 	for _, idx := range table.Indexes {
-		if idx.Unique {
-			for _, keycol := range idx.KeyColumns {
-				if keycol.Name == col.Name {
-					return true
-				}
-			}
+		if idx.Unique && len(idx.KeyColumns) == 1 && strings.EqualFold(idx.KeyColumns[0].Name, col.Name) {
+			return true
 		}
 	}
 	return false
@@ -374,14 +366,18 @@ func (c *copier) replaceValue(table tableMeta, col columnMeta, value any) (any, 
 			}
 
 			finalValue := normalizeValue(truncateToColumnLength(replacement, col, table), col)
+			valueKey := exportValueKey(finalValue)
 
 			// Check if value already exists
 			c.uniqueValuesMu.Lock()
-			if c.uniqueValues[columnKey] == nil {
-				c.uniqueValues[columnKey] = make(map[any]bool)
+			if c.uniqueValues == nil {
+				c.uniqueValues = make(map[string]map[string]struct{})
 			}
-			if !c.uniqueValues[columnKey][finalValue] {
-				c.uniqueValues[columnKey][finalValue] = true
+			if c.uniqueValues[columnKey] == nil {
+				c.uniqueValues[columnKey] = make(map[string]struct{})
+			}
+			if _, exists := c.uniqueValues[columnKey][valueKey]; !exists {
+				c.uniqueValues[columnKey][valueKey] = struct{}{}
 				c.uniqueValuesMu.Unlock()
 				return finalValue, nil
 			}

@@ -8,9 +8,9 @@ import (
 
 func (c *copier) printPlan() {
 	_, _ = fmt.Fprintln(os.Stdout, "Plan summary")
-	_, _ = fmt.Fprintf(os.Stdout, "  source: %s\n", c.cfg.SourceDSN)
+	_, _ = fmt.Fprintf(os.Stdout, "  source: %s\n", stripDSNPassword(c.cfg.SourceDSN))
 	if c.cfg.TargetDSN != "" {
-		_, _ = fmt.Fprintf(os.Stdout, "  target: %s\n", c.cfg.TargetDSN)
+		_, _ = fmt.Fprintf(os.Stdout, "  target: %s\n", stripDSNPassword(c.cfg.TargetDSN))
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "  tables selected: %d\n", len(c.tables))
 	_, _ = fmt.Fprintf(os.Stdout, "  tables selected for data: %d\n", len(c.dataTables()))

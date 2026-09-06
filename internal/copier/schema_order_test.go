@@ -64,3 +64,21 @@ func TestDataTablesExcludesDependencyOnlyTables(t *testing.T) {
 		t.Fatalf("dataTables() = %+v, want only explicitly selected table", tables)
 	}
 }
+
+func TestDiscoveredObjectsKeepsTypesSeparateFromSchemaObjects(t *testing.T) {
+	c := &copier{
+		tables:     []tableMeta{{Schema: "dbo", Name: "shared_name"}},
+		aliasTypes: []aliasTypeMeta{{Schema: "dbo", Name: "shared_name"}},
+	}
+
+	objects := c.discoveredObjects()
+	if len(objects) != 2 {
+		t.Fatalf("discoveredObjects() has %d entries, want table and type", len(objects))
+	}
+	if got := objects[objectKey("dbo", "shared_name")].kind; got != "table" {
+		t.Fatalf("schema object kind = %q, want table", got)
+	}
+	if got := objects[typeObjectKey("dbo", "shared_name")].kind; got != "alias type" {
+		t.Fatalf("type object kind = %q, want alias type", got)
+	}
+}

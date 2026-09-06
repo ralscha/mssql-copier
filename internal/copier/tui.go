@@ -1089,7 +1089,7 @@ func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
-		m.cfg = cfg
+		m.adoptConfig(cfg)
 		if strings.TrimSpace(m.cfg.SourceDSN) == "" {
 			m.status = "Source DSN is required before loading schema metadata."
 			return m, nil
@@ -1103,8 +1103,7 @@ func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
-		m.cfg = cfg
-		m.syncFakeDataIntoConfig()
+		m.adoptConfig(cfg)
 		m.status = "Writing YAML config to disk..."
 		return m, exportConfigCmd(m.cfg)
 	case formFieldStartCopy:
@@ -1117,7 +1116,7 @@ func (m tuiModel) handleFormEnter() (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
-		m.cfg = configs[0]
+		m.adoptConfig(configs[0])
 		m.currentLogPath = nextTUILogPath(m.form.ExportPath, m.form.RunMode)
 		m.recentLogPaths = prependLogPath(m.recentLogPaths, m.currentLogPath, 5)
 		m.runInProgress = true
@@ -1281,19 +1280,25 @@ func (m tuiModel) configFromForm(requireSource bool, requireTarget bool) (config
 	}
 	cfg.ExportDDLFile = ""
 	cfg.ExportDataFile = ""
+	sameFakeDataSource := sameFakeDataSourceDSN(cfg.SourceDSN, m.cfg.SourceDSN)
 	if cachedFakeData, found, cacheErr := loadCachedFakeDataMappings(cfg.SourceDSN); cacheErr != nil {
 		return config{}, cacheErr
 	} else if found {
 		cfg.FakeData = cachedFakeData
-	} else {
+	} else if !sameFakeDataSource {
 		cfg.FakeData = nil
 	}
-	if cachedUnique, found, cacheErr := loadCachedFakeDataUnique(cfg.SourceDSN); cacheErr != nil {
+	cachedUnique, found, cacheErr := loadCachedFakeDataUnique(cfg.SourceDSN)
+	if cacheErr != nil {
 		return config{}, cacheErr
-	} else if found {
+	}
+	switch {
+	case found:
 		cfg.FakeDataUnique = cachedUnique
-	} else {
+	case sameFakeDataSource:
 		cfg.FakeDataUnique = cloneStringBoolMap(m.preservedUniqueSelectors)
+	default:
+		cfg.FakeDataUnique = nil
 	}
 	if requireSource && cfg.SourceDSN == "" {
 		return config{}, fmt.Errorf("source DSN is required")
@@ -1329,6 +1334,24 @@ func (m tuiModel) configFromForm(requireSource bool, requireTarget bool) (config
 		}
 	}
 	return cfg, nil
+}
+
+func sameFakeDataSourceDSN(left, right string) bool {
+	leftKey := fakeDataCacheKey(left)
+	rightKey := fakeDataCacheKey(right)
+	if leftKey != "" || rightKey != "" {
+		return strings.EqualFold(leftKey, rightKey)
+	}
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func (m *tuiModel) adoptConfig(cfg config) {
+	if !sameFakeDataSourceDSN(cfg.SourceDSN, m.cfg.SourceDSN) {
+		m.fakeDataEntries = nil
+		m.preservedFakeData = preserveNonFullFakeData(cfg.FakeData)
+		m.preservedUniqueSelectors = cloneStringBoolMap(cfg.FakeDataUnique)
+	}
+	m.cfg = cfg
 }
 
 func (m tuiModel) executionConfigs() ([]config, error) {

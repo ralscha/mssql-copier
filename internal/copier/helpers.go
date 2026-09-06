@@ -3,6 +3,8 @@ package copier
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +48,17 @@ func closeAndLog(closer closeable, name string) {
 	if err := closer.Close(); err != nil {
 		log.Printf("close %s: %v", name, err)
 	}
+}
+
+func ensureOutputDirectory(filePath, description string) error {
+	dir := filepath.Dir(filePath)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create %s directory: %w", description, err)
+	}
+	return nil
 }
 
 func selectTableCopySQL(table tableMeta) string {

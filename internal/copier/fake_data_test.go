@@ -3,6 +3,8 @@ package copier
 import (
 	"strings"
 	"testing"
+
+	"github.com/brianvoe/gofakeit/v7"
 )
 
 func TestNewDataFakerRejectsUnknownFunction(t *testing.T) {
@@ -145,6 +147,49 @@ func TestDataFakerMatchRuleReturnsWinningRule(t *testing.T) {
 	}
 	if rule.lookupName != "email" {
 		t.Fatalf("matchRule() lookupName = %q, want %q", rule.lookupName, "email")
+	}
+}
+
+func TestCompositeKeyColumnDoesNotRequireIndividualFakeValueUniqueness(t *testing.T) {
+	faker, err := newDataFaker(map[string]string{"tenant_id": "Number"}, nil)
+	if err != nil {
+		t.Fatalf("newDataFaker() error = %v", err)
+	}
+	table := tableMeta{PrimaryKey: &keyConstraint{Columns: []keyColumn{{Name: "tenant_id"}, {Name: "record_id"}}}}
+	rule, ok := faker.matchRule(table, columnMeta{Name: "tenant_id"})
+	if !ok {
+		t.Fatal("expected fake-data rule match")
+	}
+	if rule.requiresUnique {
+		t.Fatal("a member of a composite key is not individually unique")
+	}
+
+	table.PrimaryKey.Columns = table.PrimaryKey.Columns[:1]
+	rule, _ = faker.matchRule(table, columnMeta{Name: "TENANT_ID"})
+	if !rule.requiresUnique {
+		t.Fatal("a single-column primary key should require unique generated values")
+	}
+}
+
+func TestUniqueBinaryFakeValueDoesNotPanic(t *testing.T) {
+	rule := fakeDataRule{
+		requiresUnique: true,
+		info: gofakeit.Info{Generate: func(*gofakeit.Faker, *gofakeit.MapParams, *gofakeit.Info) (any, error) {
+			return []byte{0x01, 0x02}, nil
+		}},
+	}
+	c := &copier{
+		cfg:       config{EnableFakeData: true},
+		faker:     gofakeit.New(1),
+		dataFaker: &dataFaker{columnRules: map[string]fakeDataRule{"payload": rule}},
+	}
+
+	got, err := c.replaceValue(tableMeta{Schema: "dbo", Name: "items"}, columnMeta{Name: "payload", SystemTypeName: "varbinary", MaxLength: 2}, nil)
+	if err != nil {
+		t.Fatalf("replaceValue() error = %v", err)
+	}
+	if string(got.([]byte)) != string([]byte{0x01, 0x02}) {
+		t.Fatalf("replaceValue() = %v", got)
 	}
 }
 

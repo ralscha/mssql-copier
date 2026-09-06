@@ -148,6 +148,9 @@ func TestSQLLiteral(t *testing.T) {
 		{name: "int64", value: int64(42), col: columnMeta{SystemTypeName: "int"}, want: "42"},
 		{name: "decimal string", value: decimalString("12.34"), col: columnMeta{SystemTypeName: "decimal"}, want: "12.34"},
 		{name: "datetime", value: time.Date(2024, time.January, 2, 3, 4, 5, 678900000, time.FixedZone("UTC+2", 2*60*60)), col: columnMeta{SystemTypeName: "datetime2"}, want: "'2024-01-02 01:04:05.6789'"},
+		{name: "date", value: time.Date(2024, time.January, 2, 3, 4, 5, 0, time.FixedZone("UTC+2", 2*60*60)), col: columnMeta{SystemTypeName: "date"}, want: "'2024-01-02'"},
+		{name: "time", value: time.Date(1, time.January, 1, 3, 4, 5, 678900000, time.UTC), col: columnMeta{SystemTypeName: "time"}, want: "'03:04:05.6789'"},
+		{name: "datetime offset", value: time.Date(2024, time.January, 2, 3, 4, 5, 678900000, time.FixedZone("UTC+2", 2*60*60)), col: columnMeta{SystemTypeName: "datetimeoffset"}, want: "'2024-01-02 03:04:05.6789 +02:00'"},
 	}
 
 	for _, test := range tests {
@@ -179,6 +182,42 @@ func TestBuildDataExportSQLNoTables(t *testing.T) {
 	}
 	if got != "-- mssql-copier data export\n" {
 		t.Fatalf("buildDataExportSQL() = %q", got)
+	}
+}
+
+func TestDataExportConstraintStatePreservesSourceMetadata(t *testing.T) {
+	table := tableMeta{
+		Schema: "dbo",
+		Name:   "items",
+		Checks: []checkConstraint{
+			{Name: "CK_trusted", Trusted: true},
+			{Name: "CK_untrusted"},
+			{Name: "CK_disabled", Disabled: true},
+		},
+		ForeignKeys: []foreignKey{{Name: "FK_trusted", Trusted: true}},
+	}
+	var output strings.Builder
+	if err := writeDataExportConstraintPreamble(&output, []tableMeta{table}); err != nil {
+		t.Fatalf("writeDataExportConstraintPreamble() error = %v", err)
+	}
+	if err := writeDataExportConstraintEpilogue(&output, []tableMeta{table}); err != nil {
+		t.Fatalf("writeDataExportConstraintEpilogue() error = %v", err)
+	}
+
+	got := output.String()
+	for _, want := range []string{
+		"NOCHECK CONSTRAINT [CK_trusted]",
+		"WITH CHECK CHECK CONSTRAINT [CK_trusted]",
+		"CHECK CONSTRAINT [CK_untrusted]",
+		"NOCHECK CONSTRAINT [CK_disabled]",
+		"WITH CHECK CHECK CONSTRAINT [FK_trusted]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("constraint SQL does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "CONSTRAINT ALL") {
+		t.Fatalf("constraint SQL should not alter unrelated target constraints:\n%s", got)
 	}
 }
 

@@ -41,9 +41,17 @@ To start from a specific YAML file:
 mssql-copier --config ./config/prod.yml
 ```
 
+To execute a YAML configuration without opening the TUI:
+
+```sh
+mssql-copier run --config ./config/prod.yml
+```
+
+For a non-local copy target, the headless command prompts for explicit confirmation. In trusted automation, pass `--yes` to confirm the configured target without a prompt.
+
 The TUI lets you enter source and target SQL Server connection parameters as separate fields such as server, port, database, user, password, encryption settings, and extra driver options. It also lets you adjust filters, report/export paths, Docker target settings, fake-data rules, and export the current state back into a YAML config file.
 
-When the target host is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the app asks for an explicit `yes` before it opens the target connection.
+When a headless copy target is not local (`localhost`, `127.0.0.1`, or loopback IPv6 such as `::1`), the app asks for an explicit `yes` before it opens the target connection.
 
 If the target DSN names a database that does not exist yet, the copier first connects to `master` on that same SQL Server instance and creates the database automatically before it opens the target connection.
 
@@ -100,7 +108,7 @@ The generated file contains ordered SQL statements for schemas, types, sequences
 
 Write a source-only data seed file for the selected tables by switching to `ddl+data` mode. This mode generates both a DDL baseline file and a plain SQL data file with semicolon-terminated `SET IDENTITY_INSERT` and `INSERT` statements, with no `GO` batches.
 
-The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables constraints on the exported tables before loading rows and re-checks them at the end so the script can run cleanly after a schema import even when foreign keys already exist. `drop-existing` is not supported with this mode and is hidden in the TUI.
+The generated file contains deterministic table sections and row inserts ordered by primary key when available. It temporarily disables the source-defined constraints on the exported tables before loading rows, then restores each constraint's enabled and trusted state. `drop-existing` is not supported with this mode and is hidden in the TUI.
 
 For integration testing, `ddl+data` mode also exposes an `export data rows` limit so you can cap the export to the first `N` rows per selected table.
 
@@ -215,7 +223,7 @@ llm:
   base-url: https://api.openai.com/v1
 ```
 
-For a non-interactive `ddl+data` export, set both output paths:
+For a non-interactive `ddl+data` export, set both output paths and execute the config with `mssql-copier run --config <path>`:
 
 ```yaml
 source: sqlserver://user:pass@source-host:1433?database=SourceDB
@@ -258,7 +266,10 @@ Uses the `go-mssqldb` driver. Examples:
 ```
 sqlserver://user:password@host:1433?database=MyDB
 sqlserver://user:password@host:1433?database=MyDB&encrypt=true&trustservercertificate=true
+odbc:server=host;port=1433;database=MyDB;user id=user;password={a;complex;password}
 ```
+
+ODBC-style braced values are supported, including passwords containing semicolons. Exported configuration and plan output remove passwords from URL user info, URL query parameters, and key-value parameters.
 
 ### Wildcard patterns
 

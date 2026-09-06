@@ -48,6 +48,9 @@ func writePersistedConfig(path string, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("marshal config yaml: %w", err)
 	}
+	if err := ensureOutputDirectory(path, "config output"); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return fmt.Errorf("write config file %q: %w", path, err)
 	}
@@ -130,20 +133,35 @@ func stripDSNPassword(dsn string) string {
 	if dsn == "" {
 		return dsn
 	}
-	form := parseSQLServerDSNForm(dsn)
-	if form.Password == "" {
-		return dsn
-	}
-	// Preserve the original format: URL-style or key-value.
 	if looksLikeSQLServerURL(dsn) {
 		return stripURLPassword(dsn)
 	}
-	form.Password = ""
-	stripped, err := buildSQLServerDSN(form)
-	if err != nil || stripped == "" {
-		return dsn
+	return stripKeyValuePassword(dsn)
+}
+
+func stripKeyValuePassword(dsn string) string {
+	prefix := ""
+	if len(dsn) >= len("odbc:") && strings.EqualFold(dsn[:len("odbc:")], "odbc:") {
+		prefix = dsn[:len("odbc:")]
+		dsn = dsn[len("odbc:"):]
 	}
-	return stripped
+	segments := splitSQLServerDSNSegments(dsn)
+	kept := make([]string, 0, len(segments))
+	removed := false
+	for _, segment := range segments {
+		key, _, ok := strings.Cut(segment, "=")
+		if ok && (strings.EqualFold(strings.TrimSpace(key), "password") || strings.EqualFold(strings.TrimSpace(key), "pwd")) {
+			removed = true
+			continue
+		}
+		if strings.TrimSpace(segment) != "" {
+			kept = append(kept, strings.TrimSpace(segment))
+		}
+	}
+	if !removed {
+		return strings.TrimSpace(prefix + dsn)
+	}
+	return prefix + strings.Join(kept, ";")
 }
 
 func looksLikeSQLServerURL(dsn string) bool {
@@ -156,14 +174,20 @@ func stripURLPassword(dsn string) string {
 	if err != nil || u.Scheme == "" {
 		return dsn
 	}
-	if u.User == nil {
-		return dsn
+	if u.User != nil {
+		username := u.User.Username()
+		if username == "" {
+			u.User = nil
+		} else {
+			u.User = url.User(username)
+		}
 	}
-	username := u.User.Username()
-	if username == "" {
-		u.User = nil
-	} else {
-		u.User = url.User(username)
+	query := u.Query()
+	for key := range query {
+		if strings.EqualFold(key, "password") || strings.EqualFold(key, "pwd") {
+			query.Del(key)
+		}
 	}
+	u.RawQuery = query.Encode()
 	return u.String()
 }

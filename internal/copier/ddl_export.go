@@ -3,7 +3,6 @@ package copier
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -19,11 +18,8 @@ func (c *copier) writeFlywayBaselineFile() error {
 		return err
 	}
 
-	dir := filepath.Dir(c.cfg.ExportDDLFile)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return fmt.Errorf("create flyway output directory: %w", err)
-		}
+	if err := ensureOutputDirectory(c.cfg.ExportDDLFile, "flyway output"); err != nil {
+		return err
 	}
 
 	if err := os.WriteFile(c.cfg.ExportDDLFile, []byte(script), 0o600); err != nil {

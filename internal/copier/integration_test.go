@@ -39,18 +39,21 @@ func TestCopierIntegration(t *testing.T) {
 
 	schemaName := fmt.Sprintf("sales_it_%d", time.Now().UnixNano())
 	tableFQTN := quoteIdent(schemaName) + ".[sample]"
+	typeFQTN := tableFQTN // SQL Server permits types and schema objects to share a name.
 	excludedTableFQTN := quoteIdent(schemaName) + ".[audit_2026]"
 
-	cleanupSource := fmt.Sprintf("IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s');", escapeSQLString(excludedTableFQTN), excludedTableFQTN, escapeSQLString(tableFQTN), tableFQTN, escapeSQLString(schemaName), quoteIdent(schemaName))
+	cleanupSource := fmt.Sprintf("IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; IF TYPE_ID(N'%s') IS NOT NULL DROP TYPE %s; IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s');", escapeSQLString(excludedTableFQTN), excludedTableFQTN, escapeSQLString(tableFQTN), tableFQTN, escapeSQLString(typeFQTN), typeFQTN, escapeSQLString(schemaName), quoteIdent(schemaName))
 	cleanupTarget := cleanupSource
 	defer sourceDB.ExecContext(ctx, cleanupSource)
 	defer targetDB.ExecContext(ctx, cleanupTarget)
 
 	seedStatements := []string{
 		fmt.Sprintf("CREATE SCHEMA %s;", quoteIdent(schemaName)),
-		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL, [name] nvarchar(50) NOT NULL, CONSTRAINT [PK_sample] PRIMARY KEY CLUSTERED ([id] ASC));", tableFQTN),
+		fmt.Sprintf("CREATE TYPE %s FROM nvarchar(20) NULL;", typeFQTN),
+		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL, [name] nvarchar(50) NOT NULL, [typed_value] %s NULL, [variant_value] sql_variant NULL, CONSTRAINT [PK_sample] PRIMARY KEY CLUSTERED ([id] ASC));", tableFQTN, typeFQTN),
 		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL, [message] nvarchar(50) NOT NULL, CONSTRAINT [PK_audit_2026] PRIMARY KEY CLUSTERED ([id] ASC));", excludedTableFQTN),
-		fmt.Sprintf("INSERT INTO %s ([id], [name]) VALUES (1, N'alpha'), (2, N'beta');", tableFQTN),
+		fmt.Sprintf("INSERT INTO %s ([id], [name], [typed_value], [variant_value]) VALUES (1, N'alpha', N'MixedCase', CAST(123 AS int));", tableFQTN),
+		fmt.Sprintf("INSERT INTO %s ([id], [name], [typed_value], [variant_value]) VALUES (2, N'beta', N'Second', CAST(N'variant text' AS nvarchar(20)));", tableFQTN),
 		fmt.Sprintf("INSERT INTO %s ([id], [message]) VALUES (99, N'should be skipped');", excludedTableFQTN),
 	}
 	for _, statement := range seedStatements {
@@ -92,6 +95,21 @@ func TestCopierIntegration(t *testing.T) {
 	}
 	if value != "beta" {
 		t.Fatalf("expected copied value beta, got %q", value)
+	}
+
+	var variantValue int64
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT CONVERT(bigint, [variant_value]) FROM %s WHERE [id] = 1", tableFQTN)).Scan(&variantValue); err != nil {
+		t.Fatalf("read copied sql_variant value: %v", err)
+	}
+	if variantValue != 123 {
+		t.Fatalf("copied sql_variant value = %d, want 123", variantValue)
+	}
+	var copiedTypeName string
+	if err := targetDB.QueryRowContext(ctx, "SELECT TYPE_NAME(user_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(@p1) AND name = N'typed_value'", tableFQTN).Scan(&copiedTypeName); err != nil {
+		t.Fatalf("read copied alias type: %v", err)
+	}
+	if copiedTypeName != "sample" {
+		t.Fatalf("copied alias type = %q, want sample", copiedTypeName)
 	}
 
 	var excludedCount int

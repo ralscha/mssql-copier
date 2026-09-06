@@ -48,6 +48,7 @@ func TestTypeDeclaration(t *testing.T) {
 		{name: "smalldatetime", col: columnMeta{SystemTypeName: "smalldatetime"}, want: "smalldatetime"},
 		{name: "smallint", col: columnMeta{SystemTypeName: "smallint"}, want: "smallint"},
 		{name: "smallmoney", col: columnMeta{SystemTypeName: "smallmoney"}, want: "smallmoney"},
+		{name: "sql variant", col: columnMeta{SystemTypeName: "sql_variant"}, want: "sql_variant"},
 		{name: "text", col: columnMeta{SystemTypeName: "text"}, want: "text"},
 		{name: "tinyint", col: columnMeta{SystemTypeName: "tinyint"}, want: "tinyint"},
 		{name: "uniqueidentifier", col: columnMeta{SystemTypeName: "uniqueidentifier"}, want: "uniqueidentifier"},
@@ -477,13 +478,13 @@ func TestCreateTableTypeSQL(t *testing.T) {
 }
 
 func TestTypeDeclarationUserDefined(t *testing.T) {
-	col := columnMeta{TypeSchema: "sales", UserTypeName: "order_code", IsUserDefined: true}
+	col := columnMeta{TypeSchema: "SalesTypes", UserTypeName: "OrderCode", IsUserDefined: true}
 	got, err := col.TypeDeclaration()
 	if err != nil {
 		t.Fatalf("TypeDeclaration() unexpected error: %v", err)
 	}
-	if got != "[sales].[order_code]" {
-		t.Fatalf("TypeDeclaration() = %q, want %q", got, "[sales].[order_code]")
+	if got != "[SalesTypes].[OrderCode]" {
+		t.Fatalf("TypeDeclaration() = %q, want %q", got, "[SalesTypes].[OrderCode]")
 	}
 }
 

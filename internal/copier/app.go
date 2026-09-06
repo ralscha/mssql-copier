@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -30,27 +30,28 @@ var (
 )
 
 type config struct {
-	ConfigPath     string
-	SourceDSN      string
-	TargetDSN      string
-	ExportDDLFile  string
-	ExportDataFile string
-	ExportDataRows int
-	ReportMDFile   string
-	Workers        int
-	BatchSize      int
-	Verbose        bool
-	Plan           bool
-	DropExisting   bool
-	IncludeSchemas []string
-	ExcludeSchemas []string
-	IncludeTables  []string
-	ExcludeTables  []string
-	EnableFakeData bool
-	FakeData       map[string]string
-	FakeDataUnique map[string]bool
-	LLM            llmConfig
-	Docker         dockerTargetConfig
+	ConfigPath      string
+	SourceDSN       string
+	TargetDSN       string
+	ExportDDLFile   string
+	ExportDataFile  string
+	ExportDataRows  int
+	ReportMDFile    string
+	Workers         int
+	BatchSize       int
+	Verbose         bool
+	Plan            bool
+	DropExisting    bool
+	IncludeSchemas  []string
+	ExcludeSchemas  []string
+	IncludeTables   []string
+	ExcludeTables   []string
+	EnableFakeData  bool
+	FakeData        map[string]string
+	FakeDataUnique  map[string]bool
+	TargetConfirmed bool
+	LLM             llmConfig
+	Docker          dockerTargetConfig
 }
 
 type copier struct {
@@ -70,7 +71,7 @@ type copier struct {
 	synonyms       []synonymMeta
 	report         copyReport
 	uniqueValuesMu sync.Mutex
-	uniqueValues   map[string]map[any]bool // [table.schema.name.column] -> set of generated values
+	uniqueValues   map[string]map[string]struct{} // [schema.table.column] -> stable generated-value keys
 }
 
 type yamlConfig struct {
@@ -104,10 +105,39 @@ func Main() {
 }
 
 func runMain() error {
-	if len(os.Args) > 1 && os.Args[1] == "restore" {
-		return runPortableRestoreCLI(context.Background(), os.Args[2:], os.Stdout, os.Stderr)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "restore":
+			return runPortableRestoreCLI(context.Background(), os.Args[2:], os.Stdout, os.Stderr)
+		case "run":
+			return runConfigCLI(os.Args[2:], os.Stderr)
+		}
 	}
 	return runTUI(parseFlags())
+}
+
+func runConfigCLI(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", defaultConfigPath, "path to YAML config file")
+	targetConfirmed := fs.Bool("yes", false, "confirm a non-local target without prompting")
+	configureUsage(fs, "mssql-copier run")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	cfg, err := configFromYAML(*configPath, true)
+	if err != nil {
+		return err
+	}
+	cfg.TargetConfirmed = *targetConfirmed
+	return executeConfig(cfg)
 }
 
 func executeConfig(cfg config) error {
@@ -137,8 +167,10 @@ func executeConfig(cfg config) error {
 			return err
 		}
 	}
-	if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
-		return err
+	if !cfg.TargetConfirmed {
+		if err := confirmTargetPermission(cfg.TargetDSN, cfg.requiresTarget()); err != nil {
+			return err
+		}
 	}
 	dataFaker, err := newDataFaker(cfg.FakeData, cfg.FakeDataUnique)
 	if err != nil {
@@ -171,7 +203,7 @@ func executeConfig(cfg config) error {
 		dataFaker:    dataFaker,
 		sourceDB:     sourceDB,
 		targetDB:     targetDB,
-		uniqueValues: make(map[string]map[any]bool),
+		uniqueValues: make(map[string]map[string]struct{}),
 	}
 
 	if err := c.run(ctx); err != nil {
@@ -188,8 +220,6 @@ func executeConfig(cfg config) error {
 }
 
 func parseFlags() config {
-	defaultWorkers := max(2, runtime.NumCPU())
-	defaultBatchSize := 5000
 	configureUsage(flag.CommandLine, os.Args[0])
 
 	configPath := defaultConfigPath
@@ -203,22 +233,28 @@ func parseFlags() config {
 		explicit[f.Name] = true
 	})
 
-	cfg := config{
-		Workers:   defaultWorkers,
-		BatchSize: defaultBatchSize,
-		Verbose:   true,
-	}
-
-	yamlCfg, loaded, err := loadYAMLConfig(configPath, explicit["config"])
+	cfg, err := configFromYAML(configPath, explicit["config"])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		flag.Usage()
 		os.Exit(2)
 	}
+	return cfg
+}
+
+func configFromYAML(configPath string, required bool) (config, error) {
+	cfg := config{
+		Workers:   max(2, runtime.NumCPU()),
+		BatchSize: 5000,
+		Verbose:   true,
+	}
+	yamlCfg, loaded, err := loadYAMLConfig(configPath, required)
+	if err != nil {
+		return config{}, err
+	}
 	if loaded {
 		yamlCfg.applyTo(&cfg)
 	}
-
 	cfg.ConfigPath = strings.TrimSpace(configPath)
 	if cfg.ConfigPath == "" {
 		cfg.ConfigPath = defaultConfigPath
@@ -233,7 +269,7 @@ func parseFlags() config {
 	if !cfg.EnableFakeData && len(cfg.FakeData) > 0 {
 		cfg.EnableFakeData = true
 	}
-	return cfg
+	return cfg, nil
 }
 
 func loadYAMLConfig(path string, required bool) (yamlConfig, bool, error) {
@@ -268,6 +304,11 @@ func configureUsage(fs *flag.FlagSet, programName string) {
 		out := fs.Output()
 		if _, err := fmt.Fprintf(out, "Usage of %s:\n", programName); err != nil {
 			return
+		}
+		if fs == flag.CommandLine {
+			if _, err := fmt.Fprintln(out, "\nCommands:\n  run      execute a YAML configuration without the TUI\n  restore  restore a portable Docker bundle\n\nOptions:"); err != nil {
+				return
+			}
 		}
 		fs.VisitAll(func(f *flag.Flag) {
 			if out == nil {
@@ -474,9 +515,37 @@ func sameSourceAndTargetDatabase(sourceDSN, targetDSN string) bool {
 	if dstPort == "" {
 		dstPort = defaultPort
 	}
-	return strings.EqualFold(src.Server, dst.Server) &&
+	return comparableSQLServerName(src.Server) == comparableSQLServerName(dst.Server) &&
 		srcPort == dstPort &&
 		strings.EqualFold(src.Database, dst.Database)
+}
+
+func comparableSQLServerName(server string) string {
+	server = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(server), "tcp:"))
+	if server == "" {
+		return ""
+	}
+	host := server
+	instance := ""
+	if index := strings.IndexAny(server, `\/`); index >= 0 {
+		host = server[:index]
+		instance = server[index:]
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	host = strings.TrimSuffix(host, ".")
+	if host == "." || host == "(local)" || host == "localhost" {
+		host = "<local>"
+	} else if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		host = "<local>"
+	} else if machineHost, err := os.Hostname(); err == nil {
+		machineHost = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(machineHost), "."))
+		shortMachineHost := strings.SplitN(machineHost, ".", 2)[0]
+		shortHost := strings.SplitN(host, ".", 2)[0]
+		if host == machineHost || host == shortMachineHost || shortHost == machineHost {
+			host = "<local>"
+		}
+	}
+	return host + instance
 }
 
 func dockerTargetDSN(adminDSN, sourceDSN string) (string, error) {
@@ -524,6 +593,12 @@ func (cfg config) validate() error {
 	}
 	if cfg.DropExisting && cfg.ExportDataFile != "" {
 		return fmt.Errorf("-drop-existing cannot be combined with -export-data")
+	}
+	if strings.TrimSpace(cfg.SourceDSN) == "" {
+		return fmt.Errorf("source DSN is required")
+	}
+	if cfg.requiresTarget() && !cfg.Docker.Enabled && strings.TrimSpace(cfg.TargetDSN) == "" {
+		return fmt.Errorf("target DSN is required")
 	}
 	return nil
 }
@@ -592,53 +667,33 @@ func targetHostLabel(targetDSN string) string {
 }
 
 func parseTargetHost(targetDSN string) string {
-	targetDSN = strings.TrimSpace(targetDSN)
-	if targetDSN == "" {
+	value := strings.TrimSpace(parseSQLServerDSNForm(targetDSN).Server)
+	if value == "" {
 		return ""
 	}
-	if u, err := url.Parse(targetDSN); err == nil && u.Host != "" {
-		return strings.TrimSpace(u.Hostname())
+	for _, prefix := range []string{"tcp:", "np:", "lpc:"} {
+		if len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix) {
+			value = strings.TrimSpace(value[len(prefix):])
+			break
+		}
 	}
-
-	for _, part := range strings.FieldsFunc(targetDSN, func(r rune) bool {
-		return r == ';' || r == '\n' || r == '\r'
-	}) {
-		key, value, ok := strings.Cut(part, "=")
-		if !ok {
-			continue
+	if strings.HasPrefix(value, "[") {
+		if end := strings.Index(value, "]"); end > 0 {
+			return strings.TrimSpace(value[1:end])
 		}
-		normalizedKey := strings.ToLower(strings.TrimSpace(key))
-		if normalizedKey != "server" && normalizedKey != "data source" && normalizedKey != "addr" && normalizedKey != "address" && normalizedKey != "network address" {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		value = strings.TrimPrefix(value, "tcp:")
-		value = strings.TrimPrefix(value, "np:")
-		value = strings.TrimPrefix(value, "lpc:")
-		if value == "" {
-			return ""
-		}
-		if strings.HasPrefix(value, "[") {
-			if host, _, err := net.SplitHostPort(value); err == nil {
-				return strings.TrimSpace(strings.Trim(host, "[]"))
-			}
-			return strings.TrimSpace(strings.Trim(value, "[]"))
-		}
-		if host, _, err := net.SplitHostPort(value); err == nil {
-			return strings.TrimSpace(host)
-		}
-		if idx := strings.LastIndex(value, ","); idx >= 0 {
-			if _, err := fmt.Sscanf(strings.TrimSpace(value[idx+1:]), "%d", new(int)); err == nil {
-				value = value[:idx]
-			}
-		}
-		if idx := strings.IndexAny(value, "\\/"); idx >= 0 {
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return strings.TrimSpace(host)
+	}
+	if idx := strings.LastIndex(value, ","); idx >= 0 {
+		if _, err := fmt.Sscanf(strings.TrimSpace(value[idx+1:]), "%d", new(int)); err == nil {
 			value = value[:idx]
 		}
-		return strings.TrimSpace(value)
 	}
-
-	return ""
+	if idx := strings.IndexAny(value, "\\/"); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
 }
 
 func openDB(dsn string, maxConns int) (*sql.DB, error) {

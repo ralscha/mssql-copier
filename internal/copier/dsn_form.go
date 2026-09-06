@@ -36,15 +36,26 @@ func parseSQLServerURLDSNForm(dsn string) (sqlServerDSNForm, bool) {
 	}
 
 	query := u.Query()
+	server := strings.TrimSpace(u.Hostname())
+	if instance := strings.Trim(strings.TrimSpace(u.Path), "/"); instance != "" {
+		server += `\` + instance
+	}
 	form := sqlServerDSNForm{
-		Server:                 strings.TrimSpace(u.Hostname()),
+		Server:                 server,
 		Port:                   strings.TrimSpace(u.Port()),
 		Database:               firstNonEmptyQueryValue(query, "database", "initial catalog"),
+		Username:               firstNonEmptyQueryValue(query, "user id", "uid", "user"),
+		Password:               firstNonEmptyQueryValue(query, "password", "pwd"),
 		Encrypt:                firstNonEmptyQueryValue(query, "encrypt"),
 		TrustServerCertificate: firstNonEmptyQueryValue(query, "trustservercertificate"),
 		Options: encodeExtraQueryOptions(query, map[string]struct{}{
 			"database":               {},
 			"initial catalog":        {},
+			"user id":                {},
+			"uid":                    {},
+			"user":                   {},
+			"password":               {},
+			"pwd":                    {},
 			"encrypt":                {},
 			"trustservercertificate": {},
 		}),
@@ -54,14 +65,23 @@ func parseSQLServerURLDSNForm(dsn string) (sqlServerDSNForm, bool) {
 		if password, ok := u.User.Password(); ok {
 			form.Password = password
 		}
+		if queryUsername := firstNonEmptyQueryValue(query, "user id", "uid", "user"); queryUsername != "" {
+			form.Username = queryUsername
+		}
+		if queryPassword := firstNonEmptyQueryValue(query, "password", "pwd"); queryPassword != "" {
+			form.Password = queryPassword
+		}
 	}
 	return form, true
 }
 
 func parseSQLServerKeyValueDSNForm(dsn string) sqlServerDSNForm {
 	form := sqlServerDSNForm{}
+	if len(dsn) >= len("odbc:") && strings.EqualFold(dsn[:len("odbc:")], "odbc:") {
+		dsn = dsn[len("odbc:"):]
+	}
 	extra := make([]string, 0)
-	for part := range strings.SplitSeq(dsn, ";") {
+	for _, part := range splitSQLServerDSNSegments(dsn) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -72,7 +92,7 @@ func parseSQLServerKeyValueDSNForm(dsn string) sqlServerDSNForm {
 			continue
 		}
 		key = strings.TrimSpace(strings.ToLower(key))
-		value = strings.TrimSpace(value)
+		value = decodeSQLServerDSNValue(strings.TrimSpace(value))
 		switch key {
 		case "server", "data source", "addr", "address", "network address":
 			form.Server, form.Port = splitSQLServerServerValue(value, form.Port)
@@ -89,7 +109,8 @@ func parseSQLServerKeyValueDSNForm(dsn string) sqlServerDSNForm {
 		case "trustservercertificate":
 			form.TrustServerCertificate = value
 		default:
-			extra = append(extra, part)
+			encoded, _ := encodeSQLServerDSNValue(value)
+			extra = append(extra, strings.TrimSpace(key)+"="+encoded)
 		}
 	}
 	form.Options = strings.Join(extra, ";")
@@ -113,40 +134,108 @@ func buildSQLServerDSN(form sqlServerDSNForm) (string, error) {
 		return "", fmt.Errorf("server is required")
 	}
 
-	parts := []string{"server=" + server}
+	parts := make([]string, 0, 8)
+	requiresODBC := false
+	appendSetting := func(key, value string) {
+		encoded, braced := encodeSQLServerDSNValue(value)
+		requiresODBC = requiresODBC || braced
+		parts = append(parts, key+"="+encoded)
+	}
+	appendSetting("server", server)
 	if port != "" {
-		parts = append(parts, "port="+port)
+		appendSetting("port", port)
 	}
 	if database != "" {
-		parts = append(parts, "database="+database)
+		appendSetting("database", database)
 	}
 	if username != "" {
-		parts = append(parts, "user id="+username)
+		appendSetting("user id", username)
 	}
 	if password != "" {
-		parts = append(parts, "password="+password)
+		appendSetting("password", password)
 	}
 	if encrypt != "" {
-		parts = append(parts, "encrypt="+encrypt)
+		appendSetting("encrypt", encrypt)
 	}
 	if trust != "" {
-		parts = append(parts, "trustservercertificate="+trust)
+		appendSetting("trustservercertificate", trust)
 	}
 
 	if options != "" {
-		for option := range strings.SplitSeq(options, ";") {
+		for _, option := range splitSQLServerDSNSegments(options) {
 			option = strings.TrimSpace(option)
 			if option == "" {
 				continue
 			}
-			if _, _, ok := strings.Cut(option, "="); !ok {
+			key, value, ok := strings.Cut(option, "=")
+			if !ok {
 				return "", fmt.Errorf("option %q must use key=value", option)
 			}
-			parts = append(parts, option)
+			appendSetting(strings.TrimSpace(key), decodeSQLServerDSNValue(strings.TrimSpace(value)))
 		}
 	}
 
-	return strings.Join(parts, ";"), nil
+	prefix := ""
+	if requiresODBC {
+		prefix = "odbc:"
+	}
+	return prefix + strings.Join(parts, ";"), nil
+}
+
+func splitSQLServerDSNSegments(dsn string) []string {
+	segments := make([]string, 0, strings.Count(dsn, ";")+1)
+	start := 0
+	inBraces := false
+	seenEquals := false
+	valueStarted := false
+	for index := 0; index < len(dsn); index++ {
+		char := dsn[index]
+		if inBraces {
+			if char != '}' {
+				continue
+			}
+			if index+1 < len(dsn) && dsn[index+1] == '}' {
+				index++
+				continue
+			}
+			inBraces = false
+			continue
+		}
+		if char == ';' {
+			segments = append(segments, dsn[start:index])
+			start = index + 1
+			seenEquals = false
+			valueStarted = false
+			continue
+		}
+		if !seenEquals {
+			if char == '=' {
+				seenEquals = true
+			}
+			continue
+		}
+		if valueStarted || char == ' ' || char == '\t' {
+			continue
+		}
+		valueStarted = true
+		inBraces = char == '{'
+	}
+	segments = append(segments, dsn[start:])
+	return segments
+}
+
+func decodeSQLServerDSNValue(value string) string {
+	if len(value) >= 2 && value[0] == '{' && value[len(value)-1] == '}' {
+		return strings.ReplaceAll(value[1:len(value)-1], "}}", "}")
+	}
+	return value
+}
+
+func encodeSQLServerDSNValue(value string) (string, bool) {
+	if !strings.ContainsAny(value, ";{}") {
+		return value, false
+	}
+	return "{" + strings.ReplaceAll(value, "}", "}}") + "}", true
 }
 
 func sqlServerDSNDatabaseName(dsn string) string {
@@ -161,8 +250,15 @@ func sqlServerDSNWithDatabase(dsn string, database string) (string, error) {
 
 func firstNonEmptyQueryValue(values url.Values, keys ...string) string {
 	for _, key := range keys {
-		if value := strings.TrimSpace(values.Get(key)); value != "" {
-			return value
+		for actualKey, entries := range values {
+			if !strings.EqualFold(actualKey, key) {
+				continue
+			}
+			for _, entry := range entries {
+				if value := strings.TrimSpace(entry); value != "" {
+					return value
+				}
+			}
 		}
 	}
 	return ""

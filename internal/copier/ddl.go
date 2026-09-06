@@ -192,7 +192,7 @@ func (c columnMeta) TypeDeclaration() (string, error) {
 		return "float", nil
 	case "timestamp", "rowversion":
 		return "rowversion", nil
-	case "xml", "bigint", "bit", "date", "datetime", "geography", "geometry", "hierarchyid", "image", "int", "money", "ntext", "real", "smalldatetime", "smallint", "smallmoney", "text", "tinyint", "uniqueidentifier":
+	case "xml", "bigint", "bit", "date", "datetime", "geography", "geometry", "hierarchyid", "image", "int", "money", "ntext", "real", "smalldatetime", "smallint", "smallmoney", "sql_variant", "text", "tinyint", "uniqueidentifier":
 		return typeName, nil
 	default:
 		return "", fmt.Errorf("unsupported column type %s", typeName)
