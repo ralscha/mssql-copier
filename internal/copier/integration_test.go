@@ -184,13 +184,16 @@ func TestCopierIntegrationViews(t *testing.T) {
 	tableFQTN := quoteIdent(tableSchema) + ".[orders]"
 	baseViewFQTN := quoteIdent(viewSchema) + ".[base_orders]"
 	childViewFQTN := quoteIdent(viewSchema) + ".[order_names]"
+	unqualifiedViewFQTN := "[dbo].[S_V_User_ARS]"
 
 	cleanup := fmt.Sprintf(
 		"IF OBJECT_ID(N'%s', 'V') IS NOT NULL DROP VIEW %s; "+
 			"IF OBJECT_ID(N'%s', 'V') IS NOT NULL DROP VIEW %s; "+
+			"IF OBJECT_ID(N'%s', 'V') IS NOT NULL DROP VIEW %s; "+
 			"IF OBJECT_ID(N'%s', 'U') IS NOT NULL DROP TABLE %s; "+
 			"IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s'); "+
 			"IF SCHEMA_ID(N'%s') IS NOT NULL EXEC(N'DROP SCHEMA %s');",
+		escapeSQLString(unqualifiedViewFQTN), unqualifiedViewFQTN,
 		escapeSQLString(childViewFQTN), childViewFQTN,
 		escapeSQLString(baseViewFQTN), baseViewFQTN,
 		escapeSQLString(tableFQTN), tableFQTN,
@@ -206,7 +209,8 @@ func TestCopierIntegrationViews(t *testing.T) {
 		fmt.Sprintf("CREATE TABLE %s ([id] int NOT NULL, [name] nvarchar(50) NOT NULL, [amount] int NOT NULL, CONSTRAINT [PK_orders] PRIMARY KEY CLUSTERED ([id] ASC));", tableFQTN),
 		fmt.Sprintf("INSERT INTO %s ([id], [name], [amount]) VALUES (1, N'alpha', 10), (2, N'beta', 20);", tableFQTN),
 		fmt.Sprintf("CREATE VIEW %s AS SELECT [id], [name], [amount] FROM %s WHERE [amount] >= 10;", baseViewFQTN, tableFQTN),
-		fmt.Sprintf("CREATE VIEW %s AS SELECT [id], [name] FROM %s;", childViewFQTN, baseViewFQTN),
+		fmt.Sprintf("-- Previous definition: CREATE VIEW dbo.old_view AS SELECT 0 AS [id]\nCREATE OR ALTER VIEW %s AS SELECT [id], [name] FROM %s;", childViewFQTN, baseViewFQTN),
+		fmt.Sprintf("CREATE VIEW S_V_User_ARS(id, name) AS SELECT [id], [name] FROM %s;", childViewFQTN),
 	}
 	for _, statement := range seedStatements {
 		if _, err := sourceDB.ExecContext(ctx, statement); err != nil {
@@ -222,7 +226,7 @@ func TestCopierIntegrationViews(t *testing.T) {
 			BatchSize:      1000,
 			Verbose:        false,
 			DropExisting:   true,
-			IncludeSchemas: []string{tableSchema, viewSchema},
+			IncludeSchemas: []string{tableSchema, viewSchema, "dbo"},
 		},
 		sourceDB: sourceDB,
 		targetDB: targetDB,
@@ -241,15 +245,18 @@ func TestCopierIntegrationViews(t *testing.T) {
 	}
 
 	var childCount int
-	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", childViewFQTN)).Scan(&childCount); err != nil {
-		t.Fatalf("query child view: %v", err)
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", unqualifiedViewFQTN)).Scan(&childCount); err != nil {
+		t.Fatalf("query unqualified view: %v", err)
 	}
 	if childCount != 2 {
-		t.Fatalf("expected 2 rows from copied child view, got %d", childCount)
+		t.Fatalf("expected 2 rows from copied unqualified view, got %d", childCount)
 	}
 
 	if _, err := sourceDB.ExecContext(ctx, fmt.Sprintf("ALTER VIEW %s AS SELECT [id], [name] FROM %s WHERE [amount] >= 20;", baseViewFQTN, tableFQTN)); err != nil {
 		t.Fatalf("alter source base view: %v", err)
+	}
+	if _, err := sourceDB.ExecContext(ctx, fmt.Sprintf("ALTER VIEW S_V_User_ARS AS SELECT [id], [name] FROM %s;", childViewFQTN)); err != nil {
+		t.Fatalf("alter source unqualified view: %v", err)
 	}
 
 	if err := c.run(ctx); err != nil {
@@ -257,19 +264,19 @@ func TestCopierIntegrationViews(t *testing.T) {
 	}
 
 	var filteredCount int
-	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", childViewFQTN)).Scan(&filteredCount); err != nil {
-		t.Fatalf("query child view after rerun: %v", err)
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", unqualifiedViewFQTN)).Scan(&filteredCount); err != nil {
+		t.Fatalf("query unqualified view after rerun: %v", err)
 	}
 	if filteredCount != 1 {
 		t.Fatalf("expected rerun to update dependent view output to 1 row, got %d", filteredCount)
 	}
 
 	var remainingName string
-	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT TOP 1 [name] FROM %s", childViewFQTN)).Scan(&remainingName); err != nil {
+	if err := targetDB.QueryRowContext(ctx, fmt.Sprintf("SELECT TOP 1 [name] FROM %s", unqualifiedViewFQTN)).Scan(&remainingName); err != nil {
 		t.Fatalf("read remaining child view row: %v", err)
 	}
 	if remainingName != "beta" {
-		t.Fatalf("expected updated child view to return beta, got %q", remainingName)
+		t.Fatalf("expected updated unqualified view to return beta, got %q", remainingName)
 	}
 }
 

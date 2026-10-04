@@ -295,6 +295,131 @@ FROM [dbo].[t1]`,
 	}
 }
 
+func TestCreateViewSQLHeaderVariants(t *testing.T) {
+	tests := []struct {
+		name       string
+		definition string
+		body       string
+	}{
+		{
+			name:       "unqualified name",
+			definition: "CREATE VIEW S_V_User_ARS AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "unqualified bracketed name",
+			definition: "CREATE VIEW [S_V_User_ARS] AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "create or alter",
+			definition: "create or alter view S_V_User_ARS as select 1 as [id]",
+			body:       "as select 1 as [id]",
+		},
+		{
+			name:       "unqualified alter",
+			definition: "ALTER VIEW S_V_User_ARS AS SELECT 2 AS [id]",
+			body:       "AS SELECT 2 AS [id]",
+		},
+		{
+			name:       "adjacent column list",
+			definition: "CREATE VIEW dbo.S_V_User_ARS(id) AS SELECT 1",
+			body:       "(id) AS SELECT 1",
+		},
+		{
+			name:       "escaped brackets and spaces",
+			definition: "CREATE VIEW [old]] schema].[old]] view](id) AS SELECT 1",
+			body:       "(id) AS SELECT 1",
+		},
+		{
+			name:       "quoted identifiers",
+			definition: `CREATE VIEW "old schema"."old"" view"(id) AS SELECT 1`,
+			body:       "(id) AS SELECT 1",
+		},
+		{
+			name:       "unicode identifiers",
+			definition: "CREATE VIEW Résumé.Übersicht AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "line comment with old definition",
+			definition: "-- CREATE VIEW dbo.old_view AS SELECT 0 AS [id]\r\nCREATE VIEW dbo.S_V_User_ARS AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "nested block comment with old definition",
+			definition: "/* history /* nested */ CREATE VIEW dbo.old_view AS SELECT 0 AS [id] */\nCREATE VIEW dbo.S_V_User_ARS AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "comments between header tokens",
+			definition: "CREATE/*create*/OR-- or\nALTER/*alter*/VIEW/*view*/dbo/*schema*/./*dot*/S_V_User_ARS AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "script preamble",
+			definition: "\ufeffSET ANSI_NULLS ON; -- setting\r\nGO\r\nSET QUOTED_IDENTIFIER ON;\r\nGO\r\nCREATE VIEW S_V_User_ARS AS SELECT 1 AS [id]",
+			body:       "AS SELECT 1 AS [id]",
+		},
+		{
+			name:       "preserve body comments and literals",
+			definition: "CREATE VIEW dbo.S_V_User_ARS -- body comment\nAS SELECT N'first\nGO\nSET ANSI_NULLS ON\nlast' AS [text], N'CREATE VIEW dbo.other AS SELECT 0' AS [ddl]",
+			body:       "-- body comment\nAS SELECT N'first\nGO\nSET ANSI_NULLS ON\nlast' AS [text], N'CREATE VIEW dbo.other AS SELECT 0' AS [ddl]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			view := viewMeta{Schema: "dbo", Name: "S_V_User_ARS", Definition: tt.definition}
+			want := "CREATE OR ALTER VIEW [dbo].[S_V_User_ARS] " + tt.body
+			if got := view.CreateViewSQL(); got != want {
+				t.Fatalf("CreateViewSQL() =\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+func TestCreateProgrammableSQLHeaderVariants(t *testing.T) {
+	tests := []struct {
+		name       string
+		definition string
+		body       string
+		createSQL  func(string) string
+	}{
+		{
+			name:       "PROCEDURE",
+			definition: "/* CREATE PROC dbo.old AS SELECT 0 */\nCREATE OR ALTER PROC p @id int AS\nBEGIN\nSET QUOTED_IDENTIFIER OFF;\nSELECT @id;\nEND",
+			body:       "@id int AS\nBEGIN\nSET QUOTED_IDENTIFIER OFF;\nSELECT @id;\nEND",
+			createSQL: func(definition string) string {
+				return (procedureMeta{Schema: "dbo", Name: "p", Definition: definition}).CreateProcedureSQL()
+			},
+		},
+		{
+			name:       "FUNCTION",
+			definition: "-- ALTER FUNCTION dbo.old() RETURNS int AS BEGIN RETURN 0 END\nCREATE/*comment*/FUNCTION [p](@id int) RETURNS int AS BEGIN RETURN @id END",
+			body:       "(@id int) RETURNS int AS BEGIN RETURN @id END",
+			createSQL: func(definition string) string {
+				return (functionMeta{Schema: "dbo", Name: "p", Definition: definition}).CreateFunctionSQL()
+			},
+		},
+		{
+			name:       "TRIGGER",
+			definition: "/* CREATE TRIGGER dbo.old ON dbo.t AFTER INSERT AS SELECT 0 */\nALTER TRIGGER p ON dbo.t AFTER INSERT AS SELECT 1",
+			body:       "ON dbo.t AFTER INSERT AS SELECT 1",
+			createSQL: func(definition string) string {
+				return (triggerMeta{Schema: "dbo", Name: "p", Definition: definition}).CreateTriggerSQL()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := "CREATE OR ALTER " + tt.name + " [dbo].[p] " + tt.body
+			if got := tt.createSQL(tt.definition); got != want {
+				t.Fatalf("generated SQL =\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
 func TestCreateSequenceSQL(t *testing.T) {
 	sequence := sequenceMeta{
 		Schema:      "seq",

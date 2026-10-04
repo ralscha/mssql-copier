@@ -51,7 +51,7 @@ func TestBuildFlywayBaselineSQL(t *testing.T) {
 		views: []viewMeta{{
 			Schema:     "sales",
 			Name:       "v_orders",
-			Definition: "CREATE VIEW [sales].[v_orders] AS SELECT [id] FROM [sales].[orders]",
+			Definition: "-- Previous definition: CREATE VIEW [sales].[old_view] AS SELECT 0 AS [id]\nCREATE VIEW v_orders AS SELECT [id] FROM [sales].[orders]",
 		}},
 		functions: []functionMeta{{
 			Schema:     "sales",
