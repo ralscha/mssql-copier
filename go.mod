@@ -4,9 +4,9 @@ go 1.27.3
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.1.0
+	charm.land/bubbletea/v2 v2.1.1
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/brianvoe/gofakeit/v7 v7.18.0
+	github.com/brianvoe/gofakeit/v7 v7.18.1
 	github.com/cloudwego/eino v0.9.22
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/denisenkom/go-mssqldb v0.12.3
@@ -22,7 +22,7 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.6.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
-	github.com/bytedance/sonic v1.15.4 // indirect
+	github.com/bytedance/sonic v1.15.5 // indirect
 	github.com/bytedance/sonic/loader v0.5.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -92,7 +92,7 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
-	github.com/xo/terminfo v1.2.0 // indirect
+	github.com/xo/terminfo v1.3.0 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
