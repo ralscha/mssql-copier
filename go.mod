@@ -5,8 +5,8 @@ go 1.27.4
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.1
-	charm.land/lipgloss/v2 v2.1.0
-	github.com/brianvoe/gofakeit/v7 v7.18.4
+	charm.land/lipgloss/v2 v2.1.1
+	github.com/brianvoe/gofakeit/v7 v7.18.7
 	github.com/cloudwego/eino v0.9.23
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/denisenkom/go-mssqldb v0.12.3
